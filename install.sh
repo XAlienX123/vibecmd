@@ -1,5 +1,6 @@
 #!/bin/sh
-# Installs (or updates) VibeCMD from the latest GitHub release.
+# Installs (or updates) VibeCMD from the latest GitHub release, which is
+# built from main on every push.
 #   curl -fsSL https://raw.githubusercontent.com/XAlienX123/vibecmd/main/install.sh | sh
 # Uses the native package on Arch-based and Debian-based distros, and the
 # AppImage everywhere else.
@@ -42,7 +43,7 @@ if have pacman; then
   say "Downloading $(basename "$url")"
   download "$url" "$TMP/$(basename "$url")"
   say "Installing with pacman"
-  $SUDO pacman -U --noconfirm --needed "$TMP/$(basename "$url")"
+  $SUDO pacman -U --noconfirm "$TMP/$(basename "$url")"
 elif have apt-get && have dpkg; then
   url=$(asset_url '_amd64\.deb') || true
   [ -n "$url" ] || die "no .deb package in the latest release."
@@ -51,7 +52,7 @@ elif have apt-get && have dpkg; then
   chmod 644 "$TMP/vibecmd.deb"
   chmod 755 "$TMP"
   say "Installing with apt"
-  $SUDO apt-get install -y "$TMP/vibecmd.deb"
+  $SUDO apt-get install -y --reinstall "$TMP/vibecmd.deb"
 else
   url=$(asset_url '\.AppImage') || true
   [ -n "$url" ] || die "no AppImage in the latest release."

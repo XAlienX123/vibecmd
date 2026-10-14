@@ -11,7 +11,9 @@ A tiling workspace for [Claude Code](https://claude.com/claude-code) and termina
   Rename a pane yourself to stop this.
 - A pulsing dot shows panes that are still working. VibeCMD asks before you close a pane that is busy.
 - Saved layouts, a right-click wheel, themes, and pop-out into a normal terminal window.
-- Windows only: drag an open CMD window onto VibeCMD to dock it into a pane. App windows (Notepad, Notepad++, Kate...) dock the same way, work as usual inside their pane, reopen on the next launch, and get the chance to save when VibeCMD closes.
+- Editor panes: a built-in text editor (the one VS Code is made of) with tabs for open files, syntax colours, find and replace. It works the same on Windows and Linux. Files Claude edits reload by themselves, with the changed lines lit up.
+- Browser panes: a web page in a pane, with an address bar. Sign-ins are kept between launches.
+- Windows only: drag an open CMD window onto VibeCMD to dock it into a pane. Other app windows dock the same way and work as usual inside their pane.
 
 Press **Help** in the app for the full list of controls.
 
@@ -22,6 +24,8 @@ Press **Help** in the app for the full list of controls.
 ## Install
 
 Run one command. Run it again later to update.
+
+Every push to `main` is built and published as the newest release, so the command always installs `main` as it is now.
 
 **Windows** (CMD):
 

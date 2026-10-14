@@ -9,6 +9,11 @@ on:
 permissions:
   contents: write
 
+# A newer push to main replaces a build still running for an older one.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -23,6 +28,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      # Every build of main is released (see "release" below), so each one gets
+      # its own version: package.json's major.minor, and the run number as the
+      # patch. Package managers then see it as newer than what's installed.
+      - name: Version
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        shell: bash
+        run: |
+          base=$(node -p "require('./package.json').version.split('.').slice(0, 2).join('.')")
+          npm pkg set version="$base.${{ github.run_number }}"
 
       # bsdtar is needed for the pacman package (Arch, CachyOS, Manjaro...).
       - name: Linux build tools
@@ -48,13 +63,47 @@ jobs:
             dist/*.exe
           if-no-files-found: error
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+  # Publishes the build as the latest release: a tag (v*) as itself, a push to
+  # main as v<major>.<minor>.<run number>. The install scripts and the in-app
+  # update check always take the latest release, so they get main as it is now.
+  release:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
-          files: |
-            dist/*.AppImage
-            dist/*.pacman
-            dist/*.deb
-            dist/*.tar.gz
-            dist/*.exe
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+            title="VibeCMD ${tag}"
+            notes="Release ${tag}."
+          else
+            base=$(node -p "require('./package.json').version.split('.').slice(0, 2).join('.')")
+            tag="v$base.${GITHUB_RUN_NUMBER}"
+            title="VibeCMD ${tag} (main)"
+            notes="Automatic build of main at ${GITHUB_SHA::7}: $(git log -1 --format=%s)"
+          fi
+          # A re-run of the same build replaces its files.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --target "$GITHUB_SHA" --title "$title" --notes "$notes" --latest
+          fi
+
+      # Only the 5 newest automatic builds of main are kept.
+      - name: Remove old main builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --limit 200 --json tagName,name,createdAt \
+            --jq '[.[] | select(.name | endswith("(main)"))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' |
+          while read -r tag; do gh release delete "$tag" --cleanup-tag --yes; done

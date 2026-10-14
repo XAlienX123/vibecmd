@@ -63,8 +63,29 @@ contextBridge.exposeInMainWorld('deck', {
   saveState: (json) => ipcRenderer.send('state:save', json),
   pickFolder: (opts) => ipcRenderer.invoke('dialog:pickFolder', opts),
   pickFile: (opts) => ipcRenderer.invoke('dialog:pickFile', opts),
-  // Installed editors files can be opened in: [{ name, exe, flags }].
-  editors: () => ipcRenderer.invoke('app:editors'),
+  saveFile: (opts) => ipcRenderer.invoke('dialog:saveFile', opts),
+  // "Save / Don't save / Cancel" about unsaved files: 0 / 1 / 2.
+  askUnsaved: (opts) => ipcRenderer.invoke('dialog:unsaved', opts),
+  // Editor panes' files: { text, encoding, bom } or { error }.
+  readFile: (file) => ipcRenderer.invoke('file:read', file),
+  // Resolves with an error message, or null once saved.
+  writeFile: (file, text, opts) => ipcRenderer.invoke('file:write', file, text, opts),
+  watchFile: (file) => ipcRenderer.send('file:watch', file),
+  unwatchFile: (file) => ipcRenderer.send('file:unwatch', file),
+  onFileChanged: (fn) => { ipcRenderer.on('file:changed', (_e, file) => fn(file)); },
+  setUnsavedCount: (n) => ipcRenderer.send('editor:unsaved', n),
+  // Quitting with unsaved files, "Save all": `fn` resolves true once all are saved.
+  onSaveAll: (fn) => {
+    ipcRenderer.on('editor:saveAll', async () => ipcRenderer.send('editor:savedAll', await fn()));
+  },
+  // Browser panes (see "browser panes" in main.js).
+  createBrowser: (url) => ipcRenderer.invoke('browser:create', url),
+  placeBrowser: (id, x, y, w, h) => ipcRenderer.send('browser:place', id, x, y, w, h),
+  hideBrowser: (id) => ipcRenderer.send('browser:hide', id),
+  browserDo: (id, action, arg) => ipcRenderer.send('browser:do', id, action, arg),
+  destroyBrowser: (id) => ipcRenderer.send('browser:destroy', id),
+  // (id, what, ...details): url, title, loading, focus, failed, open, key.
+  onBrowserEvent: (fn) => { ipcRenderer.on('browser:event', (_e, id, what, ...args) => fn(id, what, ...args)); },
   popOut: (opts) => ipcRenderer.invoke('pane:popOut', opts),
   // True when the mouse is outside the VibeCMD window (a pane dragged out of it).
   cursorOutside: () => ipcRenderer.invoke('app:cursorOutside'),

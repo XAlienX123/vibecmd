@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, Menu, screen } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, dialog, shell, clipboard, Menu, screen } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -162,14 +162,20 @@ function createWindow() {
     ptys.clear();
     dockedBusy.clear();
     Promise.all([...mirrors.keys()].map(stopMirror)).then(() => helperSend('release-all'));
+    for (const id of [...browsers.keys()]) destroyBrowser(id);
+    for (const file of watched.keys()) fs.unwatchFile(file);
+    watched.clear();
+    unsavedFiles = 0;
   });
 
   let confirmed = false;
   let released = false;
   let appsClosed = false;
   let closingApps = false;
+  let filesSettled = false;
+  let savingFiles = false;
   win.on('close', (e) => {
-    if (closingApps) { e.preventDefault(); return; }
+    if (closingApps || savingFiles) { e.preventDefault(); return; }
     // Idle sessions just reopen next time, so only ask when something is still
     // running: Claude mid-task, or a command that hasn't returned to the prompt.
     const busy = [...ptys.values()].filter(isBusy).length + dockedBusy.size;
@@ -186,6 +192,29 @@ function createWindow() {
       if (choice === 1) { e.preventDefault(); return; }
       confirmed = true;
     }
+    // Files with unsaved changes in editor panes: save them, or not, or stay.
+    if (unsavedFiles && !filesSettled) {
+      e.preventDefault();
+      const choice = dialog.showMessageBoxSync(win, {
+        type: 'warning',
+        buttons: ['Save all', "Don't save", 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        title: 'Quit VibeCMD?',
+        message: `${unsavedFiles} file${unsavedFiles > 1 ? 's have' : ' has'} unsaved changes in editor panes.`,
+      });
+      if (choice === 2) { confirmed = false; return; }
+      if (choice === 1) { filesSettled = true; win.close(); return; }
+      savingFiles = true;
+      saveAllFiles().then((ok) => {
+        savingFiles = false;
+        if (!win) return;
+        if (!ok) { confirmed = false; return; }
+        filesSettled = true;
+        win.close();
+      });
+      return;
+    }
     // Docked apps (editors) are asked to close next, one by one, so each can
     // offer to save. Cancel in any of them and VibeCMD stays open as it was:
     // apps that did close are started again in their panes (see app:quitting).
@@ -198,6 +227,7 @@ function createWindow() {
         if (!win) return;
         if (!ok) {
           confirmed = false;
+          filesSettled = false;
           win.webContents.send('app:quitting', false);
           return;
         }
@@ -702,27 +732,195 @@ ipcMain.handle('dialog:pickFile', async (_e, { defaultPath, title, buttonLabel, 
   return res.canceled ? null : res.filePaths[0];
 });
 
-// Editors a file can be opened in, in a docked pane (Windows only, see
-// native/winhelper.cs). `flags` make each start a window of its own, rather
-// than hand the file to a copy that's already open (maybe in another pane).
-function editorCandidates() {
-  const pf = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean);
-  const local = process.env.LOCALAPPDATA || '';
-  return [
-    { name: 'Notepad++', paths: pf.map((d) => path.join(d, 'Notepad++', 'notepad++.exe')), flags: '-multiInst -nosession' },
-    { name: 'Kate', paths: pf.map((d) => path.join(d, 'Kate', 'bin', 'kate.exe')), flags: '-n' },
-    { name: 'VS Code', paths: [path.join(local, 'Programs', 'Microsoft VS Code', 'Code.exe'), ...pf.map((d) => path.join(d, 'Microsoft VS Code', 'Code.exe'))], flags: '--new-window' },
-    { name: 'Sublime Text', paths: pf.map((d) => path.join(d, 'Sublime Text', 'sublime_text.exe')), flags: '-n' },
-    { name: 'Notepad', paths: [path.join(process.env.WINDIR || 'C:\\Windows', 'notepad.exe')], flags: '' },
-  ];
+ipcMain.handle('dialog:saveFile', async (_e, { defaultPath, title } = {}) => {
+  const res = await dialog.showSaveDialog(win, { defaultPath, title });
+  return res.canceled ? null : res.filePath;
+});
+
+// 0 save, 1 don't save, 2 cancel.
+ipcMain.handle('dialog:unsaved', async (_e, { message, detail }) => {
+  const res = await dialog.showMessageBox(win, {
+    type: 'warning', buttons: ['Save', "Don't save", 'Cancel'], defaultId: 0, cancelId: 2, title: 'Unsaved changes', message, detail,
+  });
+  return res.response;
+});
+
+// ---------------------------------------------------------------- editor panes' files
+
+// Files are read as UTF-8 (with or without a BOM) or UTF-16 LE with a BOM.
+// Anything else is taken byte for byte as Latin-1, so saving it writes back
+// exactly the bytes it had.
+const MAX_EDIT_SIZE = 50 * 1024 * 1024;
+
+ipcMain.handle('file:read', (_e, file) => {
+  try {
+    if (fs.statSync(file).size > MAX_EDIT_SIZE) return { error: 'This file is too big to edit here (over 50 MB).' };
+    const buf = fs.readFileSync(file);
+    if (buf[0] === 0xff && buf[1] === 0xfe) return { text: buf.subarray(2).toString('utf16le'), encoding: 'utf16le', bom: true };
+    const bom = buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
+    const body = bom ? buf.subarray(3) : buf;
+    if (body.subarray(0, 8000).includes(0)) return { error: 'This looks like a binary file, not text.' };
+    try {
+      return { text: new TextDecoder('utf-8', { fatal: true }).decode(body), encoding: 'utf8', bom };
+    } catch {
+      return { text: body.toString('latin1'), encoding: 'latin1', bom: false };
+    }
+  } catch (err) {
+    return { error: err.code === 'ENOENT' ? 'The file no longer exists.' : err.message };
+  }
+});
+
+ipcMain.handle('file:write', (_e, file, text, { encoding = 'utf8', bom = false } = {}) => {
+  try {
+    // U+FEFF comes out as the right BOM for either encoding.
+    fs.writeFileSync(file, (bom ? '﻿' : '') + text, encoding);
+    return null;
+  } catch (err) {
+    return err.message;
+  }
+});
+
+// Open files are polled for changes made outside (Claude's edits, say). Polling
+// also survives editors that save by replacing the file, which fs.watch doesn't.
+const watched = new Map();
+
+ipcMain.on('file:watch', (_e, file) => {
+  const n = watched.get(file) || 0;
+  watched.set(file, n + 1);
+  if (n) return;
+  fs.watchFile(file, { interval: 700 }, (cur, prev) => {
+    if (cur.mtimeMs !== prev.mtimeMs || cur.size !== prev.size) win?.webContents.send('file:changed', file);
+  });
+});
+
+ipcMain.on('file:unwatch', (_e, file) => {
+  const n = (watched.get(file) || 0) - 1;
+  if (n > 0) { watched.set(file, n); return; }
+  watched.delete(file);
+  fs.unwatchFile(file);
+});
+
+// How many files in editor panes have unsaved changes; quitting asks about them.
+let unsavedFiles = 0;
+ipcMain.on('editor:unsaved', (_e, n) => { unsavedFiles = n; });
+
+// Resolves true once the renderer has saved every file (false: one wasn't).
+function saveAllFiles() {
+  return new Promise((resolve) => {
+    ipcMain.once('editor:savedAll', (_e, ok) => resolve(ok));
+    win.webContents.send('editor:saveAll');
+  });
 }
 
-ipcMain.handle('app:editors', () => {
-  if (!IS_WIN) return [];
-  return editorCandidates()
-    .map(({ name, paths, flags }) => ({ name, exe: paths.find((p) => fs.existsSync(p)), flags }))
-    .filter((e) => e.exe);
+// ---------------------------------------------------------------- browser panes
+
+// Each browser pane is a view of its own laid over the pane, like a docked app
+// window: the renderer says where, and hides it while a menu or dialog would
+// be under it. Sign-ins and cookies are kept between launches.
+const browsers = new Map();
+let nextBrowser = 1;
+
+// VibeCMD's own shortcuts still work while a page has the keyboard: they're
+// handed to the renderer instead (see appShortcut in app.js), as are the
+// browser keys it handles itself.
+function isPaneShortcut(i) {
+  const key = i.key.length === 1 ? i.key.toUpperCase() : i.key;
+  if (i.control && i.shift && !i.alt && ['N', 'T', 'D', 'W', 'P', 'Enter'].includes(key)) return true;
+  if (i.control && !i.alt && ['Tab', 'PageUp', 'PageDown'].includes(key)) return true;
+  if (i.alt && !i.control && key === 'K') return true;
+  if (i.alt && i.shift && !i.control && key.startsWith('Arrow')) return true;
+  if (i.alt && !i.shift && !i.control && (key === 'ArrowLeft' || key === 'ArrowRight')) return true;
+  if (i.control && !i.shift && !i.alt && (key === 'L' || key === 'R')) return true;
+  return key === 'F5';
+}
+
+ipcMain.handle('browser:create', (_e, url) => {
+  const id = nextBrowser++;
+  const view = new WebContentsView({ webPreferences: { partition: 'persist:browser', sandbox: true } });
+  view.setVisible(false);
+  view.setBackgroundColor('#ffffff');
+  win.contentView.addChildView(view);
+  browsers.set(id, view);
+  const wc = view.webContents;
+  const send = (what, ...args) => win?.webContents.send('browser:event', id, what, ...args);
+  const sendUrl = () => send('url', wc.getURL(), wc.navigationHistory.canGoBack(), wc.navigationHistory.canGoForward());
+  wc.on('did-navigate', sendUrl);
+  wc.on('did-navigate-in-page', sendUrl);
+  wc.on('page-title-updated', (_ev, title) => send('title', title));
+  wc.on('did-start-loading', () => send('loading', true));
+  wc.on('did-stop-loading', () => send('loading', false));
+  wc.on('focus', () => send('focus'));
+  wc.on('did-fail-load', (_ev, code, desc, failed, isMain) => {
+    // -3: a navigation that was replaced by another one, not a real failure.
+    if (isMain && code !== -3) send('failed', `${desc} (${failed})`);
+  });
+  wc.on('before-input-event', (ev, input) => {
+    if (input.type !== 'keyDown' || !isPaneShortcut(input)) return;
+    ev.preventDefault();
+    send('key', { key: input.key, ctrlKey: input.control, shiftKey: input.shift, altKey: input.alt });
+  });
+  // Links meant for a new tab open in a new browser pane; real popups (sign-in
+  // windows, mostly) stay popups, so the page that opened them can hear back.
+  wc.setWindowOpenHandler(({ url: target, disposition }) => {
+    if (disposition === 'new-window') return { action: 'allow' };
+    send('open', target);
+    return { action: 'deny' };
+  });
+  wc.on('context-menu', (_ev, p) => {
+    const items = [
+      { label: 'Back', enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
+      { label: 'Forward', enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
+      { label: 'Reload', click: () => wc.reload() },
+      { type: 'separator' },
+    ];
+    if (p.linkURL) {
+      items.push(
+        { label: 'Open link in a new pane', click: () => send('open', p.linkURL) },
+        { label: 'Copy link', click: () => clipboard.writeText(p.linkURL) },
+        { type: 'separator' },
+      );
+    }
+    if (p.isEditable) items.push({ role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' });
+    else if (p.selectionText) items.push({ role: 'copy' });
+    items.push({ type: 'separator' }, { label: 'Inspect', click: () => wc.inspectElement(p.x, p.y) });
+    Menu.buildFromTemplate(items).popup({ window: win });
+  });
+  wc.loadURL(url).catch(() => { /* reported by did-fail-load */ });
+  return id;
 });
+
+// In the renderer's pixels, which are the window's once zoom is applied.
+ipcMain.on('browser:place', (_e, id, x, y, w, h) => {
+  const view = browsers.get(id);
+  if (!view) return;
+  const z = win.webContents.getZoomFactor();
+  view.setBounds({ x: Math.round(x * z), y: Math.round(y * z), width: Math.round(w * z), height: Math.round(h * z) });
+  view.setVisible(true);
+});
+
+ipcMain.on('browser:hide', (_e, id) => browsers.get(id)?.setVisible(false));
+
+ipcMain.on('browser:do', (_e, id, action, arg) => {
+  const wc = browsers.get(id)?.webContents;
+  if (!wc) return;
+  if (action === 'load') wc.loadURL(arg).catch(() => {});
+  else if (action === 'back') wc.navigationHistory.goBack();
+  else if (action === 'forward') wc.navigationHistory.goForward();
+  else if (action === 'reload') wc.reload();
+  else if (action === 'stop') wc.stop();
+  else if (action === 'focus') wc.focus();
+  else if (action === 'devtools') wc.toggleDevTools();
+});
+
+function destroyBrowser(id) {
+  const view = browsers.get(id);
+  if (!view) return;
+  browsers.delete(id);
+  win?.contentView.removeChildView(view);
+  view.webContents.close();
+}
+
+ipcMain.on('browser:destroy', (_e, id) => destroyBrowser(id));
 
 ipcMain.handle('dialog:pickFolder', async (_e, { defaultPath, title, buttonLabel } = {}) => {
   const res = await dialog.showOpenDialog(win, {

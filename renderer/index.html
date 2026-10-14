@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:" />
   <title>VibeCMD</title>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
   <link rel="stylesheet" href="style.css" />
@@ -59,9 +59,12 @@
             <li><b>Hold</b> right-click for a wheel: move towards a slot and release (up Claude, right CMD, down PowerShell, left Duplicate, corners Park / Maximize / Close / Pop out). Edit the slots in Layout settings.</li>
             <li><b>+C</b> / <b>&gt;_</b> on a pane: new Claude / CMD right next to it, in the same folder.</li>
             <li><b>New Claude</b> asks which folder to open in, starting at the last one you picked. <b>📁</b> in the toolbar is that last folder.</li>
-            <li><b>Drag a folder or file from your file manager</b> onto a pane edge to open CMD / Claude / PowerShell in that folder. A file can also be opened in an editor there (Windows).</li>
-            <li><b>Open file…</b> in the right-click menu (Windows): pick a file, starting in that pane's folder, and it opens in an editor pane where the preview showed. Notepad++, Kate, VS Code, Sublime Text and Notepad are found automatically; with more than one, you pick (the last one used comes first). It can go on a wheel slot too.</li>
+            <li><b>Drag a folder or file from your file manager</b> onto a pane edge to open CMD / Claude / PowerShell in that folder. A file can also be opened in an editor pane there.</li>
+            <li><b>Open file…</b> in the right-click menu: pick a file, starting in that pane's folder, and it opens in an editor pane where the preview showed. It can go on a wheel slot too.</li>
+            <li><b>Editor panes</b> are VibeCMD's own text editor (the one VS Code is built on): syntax colours, Find / Replace (<kbd>Ctrl+F</kbd> / <kbd>Ctrl+H</kbd>), multiple cursors (<kbd>Alt+click</kbd>), Go to line (<kbd>Ctrl+G</kbd>), word wrap (<kbd>Alt+Z</kbd>). Each pane has its open files along its top: <kbd>Ctrl+O</kbd> open, <kbd>Ctrl+N</kbd> new, <kbd>Ctrl+S</kbd> save, <kbd>Ctrl+Shift+S</kbd> save as, <kbd>Ctrl+W</kbd> close the file. A file changed outside (by Claude, say) reloads by itself and the changed lines light up; if you have unsaved changes it asks first.</li>
+            <li><b>Browser panes</b>: right-click, <b>Browser</b>. Type an address or a search in its bar (<kbd>Ctrl+L</kbd>). <kbd>Alt+Left/Right</kbd> back / forward, <kbd>F5</kbd> reload, ⇱ opens the page in your normal browser. Links that open a new tab open a new browser pane. Sign-ins are kept between launches.</li>
             <li><b>Send to Claude:</b> select text in any terminal, right-click, "Send to …" a Claude pane (this tab's first). It's pasted into Claude's prompt without sending, so you can add your question and press Enter.</li>
+            <li><b>Linked editor:</b> right-click a Claude pane's title bar, "Show Claude's edits in …" an editor pane in this tab (or a new one, opened at Claude's first edit). Every file Claude edits or writes then opens there, with the changed lines lit up.</li>
             <li><b>Ctrl+Shift+P</b> jumps to any pane or tab by typing part of its name, tab or folder.</li>
             <li><b>Everything is saved automatically.</b> Next launch reopens every tab and pane in the same layout and folders, and each Claude pane continues its own chat.</li>
           </ul>
@@ -84,8 +87,7 @@
             <li><b>✕</b> closes a docked CMD window for good. For a docked app it's the same as the app's own close button: it asks to save unsaved work, and <b>Cancel</b> keeps it open.</li>
             <li><b>Quitting VibeCMD</b> closes docked apps one by one, showing each, so you can save. Cancel in any of them and VibeCMD stays open, just as it was.</li>
             <li><b>Docked apps reopen</b> in their panes next launch, started with the same file. Docked CMD windows don't.</li>
-            <li><b>Linked editor:</b> right-click a Claude pane's title bar, "Show Claude's edits in …" an editor pane in this tab (or a new one, opened at Claude's first edit). Every file Claude edits or writes then opens there. While the editor has unsaved changes it waits, and switches once you've saved.</li>
-            <li><b>Unsaved changes</b> in a docked editor show as a hollow dot and "unsaved" in its title bar, and ● on its tab.</li>
+            <li><b>Unsaved changes</b> in a docked app or an editor pane show as a hollow dot and "unsaved" in its title bar, and ● on its tab.</li>
             <li>While a docked app has the keyboard, VibeCMD's own shortcuts go to the app. Click a terminal pane (or a title bar) to get them back.</li>
           </ul>
         </section>
@@ -117,6 +119,10 @@
   <script src="../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
   <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
   <script src="themes.js"></script>
+  <!-- After xterm's scripts: with an AMD loader present they'd register as modules instead of globals. -->
+  <script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
+  <script src="editor.js"></script>
+  <script src="browser.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

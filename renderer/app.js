@@ -17,7 +17,11 @@ const KIND_LABEL = {
   'claude-continue': 'Claude',
   cmd: SHELL_LABEL,
   powershell: 'PowerShell',
+  editor: 'Editor',
+  browser: 'Browser',
 };
+
+const TERM_FONT = '"Cascadia Mono", "Cascadia Code", Consolas, "JetBrains Mono", "DejaVu Sans Mono", "Noto Sans Mono", monospace';
 
 let themeName = localStorage.getItem('vibecmd.theme') in THEMES ? localStorage.getItem('vibecmd.theme') : DEFAULT_THEME;
 
@@ -299,15 +303,28 @@ function startRename(s) {
   s.el.querySelector('.title').dispatchEvent(new Event('dblclick'));
 }
 
-function createSession({ kind, cwd, title, claudeId, fontSize, hwnd, color, renamed, app, uid, link, linkEditor, run }) {
+function createSession({ kind, cwd, title, claudeId, fontSize, hwnd, color, renamed, app, uid, link, linkEditor, run, files, file, wrap, url }) {
+  // Editor panes used to dock an outside editor (Notepad++, Kate...) on its
+  // file; they reopen as built-in editors on that file.
+  if (kind === 'app' && app?.file) {
+    kind = 'editor';
+    files = [app.file];
+    app = null;
+  }
   const s = {
     id: nextPaneId++,
     // Stays the same across restarts, so links between panes survive them.
     uid: uid || crypto.randomUUID(),
     // Claude panes: the editor pane (uid) showing the files Claude edits, and
-    // the editor to open one in if there's none (see "linked editors").
+    // whether to open one if there's none (see "linked editors").
     link: link || null,
-    linkEditor: linkEditor || null,
+    linkEditor: !!linkEditor,
+    // Editor panes: the files open in it and the one showing (see editor.js).
+    files: files || (file ? [file] : []),
+    file: file || null,
+    wrap: !!wrap,
+    // Browser panes: the page's address (see browser.js).
+    url: url || null,
     // Shell panes: a command typed in at the first prompt, every time it starts.
     run: run || null,
     kind,
@@ -335,10 +352,15 @@ function createSession({ kind, cwd, title, claudeId, fontSize, hwnd, color, rena
     s.el.querySelector('.path').textContent = '';
     s.el.querySelector('[data-act="close"]').title = 'Close this app (it asks to save, as usual)';
     s.termEl.addEventListener('click', () => { if (!s.hwnd && !s.launching) launchApp(s); });
+  } else if (kind === 'editor') {
+    setupEditorPane(s);
+  } else if (kind === 'browser') {
+    setupBrowserPane(s);
   }
 
+  // Editor and browser panes never open theirs, but keep its font size.
   s.term = new Terminal({
-    fontFamily: '"Cascadia Mono", "Cascadia Code", Consolas, "JetBrains Mono", "DejaVu Sans Mono", "Noto Sans Mono", monospace',
+    fontFamily: TERM_FONT,
     fontSize: fontSize || 13,
     cursorBlink: true,
     cursorStyle: 'bar',
@@ -434,6 +456,7 @@ function createSession({ kind, cwd, title, claudeId, fontSize, hwnd, color, rena
     e.stopPropagation();
     const size = s.term.options.fontSize + (e.deltaY < 0 ? 1 : -1);
     s.term.options.fontSize = Math.max(8, Math.min(32, size));
+    s.editor?.updateOptions({ fontSize: s.term.options.fontSize });
     fitSession(s);
     save();
   }, { capture: true, passive: false });
@@ -443,7 +466,8 @@ function createSession({ kind, cwd, title, claudeId, fontSize, hwnd, color, rena
   // measured a fallback font's character width.
   document.fonts.ready.then(() => fitSession(s));
   new ResizeObserver(() => {
-    if (s.kind === 'app') { syncApps(); return; }
+    if (s.kind === 'app' || s.kind === 'browser') { syncApps(); return; }
+    if (s.kind === 'editor') return; // the editor follows its size itself
     clearTimeout(fitTimer);
     fitTimer = setTimeout(() => fitSession(s), 30);
   }).observe(s.termEl);
@@ -529,6 +553,9 @@ function undock(id) {
 async function popOut(s) {
   if (!sessions.has(s.id)) return;
   if (s.hwnd) { undock(s.id); return; }
+  // A page goes to the normal browser, and stays here too; a file stays here.
+  if (s.kind === 'browser') { if (s.url) deck.openExternal(s.url); return; }
+  if (s.kind === 'editor') return;
   if (s.busy && !s.exited &&
       !confirm(`${busyWhat(s)} in "${s.title}". Popping it out restarts it as a window (Claude resumes its chat). Continue?`)) return;
   if (!await deck.popOut({ ptyId: s.ptyId, kind: s.kind, cwd: s.cwd, claudeId: s.claudeId, title: s.title })) {
@@ -556,8 +583,8 @@ deck.onDockedTitle((hwnd, title) => {
 let appsQueued = false;
 let quitting = false;
 
-// Where each app window is now ("x y w h", or null when hidden), so only
-// changes are sent.
+// Where each app window (and browser pane's page, keyed "b<id>") is now
+// ("x y w h", or null when hidden), so only changes are sent.
 const appPlaced = new Map();
 
 function syncApps() {
@@ -568,16 +595,23 @@ function syncApps() {
     const covers = [...document.querySelectorAll('.kind-menu, .wheel')].map((el) => el.getBoundingClientRect());
     const hideAll = document.body.classList.contains('dragging') || !$help.hidden || !!document.querySelector('.modal');
     for (const s of sessions.values()) {
-      if (s.kind !== 'app' || !s.hwnd) continue;
-      const r = s.termEl.getBoundingClientRect();
+      const key = s.kind === 'app' ? s.hwnd : s.kind === 'browser' && s.browserId != null ? `b${s.browserId}` : null;
+      if (!key) continue;
+      const r = (s.viewEl || s.termEl).getBoundingClientRect();
       const shown = s.el.isConnected && !hideAll && r.width > 0 && r.height > 0 &&
         (zoomedId == null || zoomedId === s.id) &&
         !covers.some((c) => c.left < r.right && c.right > r.left && c.top < r.bottom && c.bottom > r.top);
       const at = shown ? `${r.left} ${r.top} ${r.width} ${r.height}` : null;
-      if (appPlaced.get(s.hwnd) === at) continue;
-      appPlaced.set(s.hwnd, at);
-      if (at) deck.placeApp(s.hwnd, r.left, r.top, r.width, r.height);
-      else deck.hideApp(s.hwnd);
+      if (appPlaced.get(key) === at) continue;
+      appPlaced.set(key, at);
+      if (s.kind === 'browser') {
+        if (at) deck.placeBrowser(s.browserId, r.left, r.top, r.width, r.height);
+        else deck.hideBrowser(s.browserId);
+      } else if (at) {
+        deck.placeApp(s.hwnd, r.left, r.top, r.width, r.height);
+      } else {
+        deck.hideApp(s.hwnd);
+      }
     }
   });
 }
@@ -627,7 +661,7 @@ deck.onAppFocus((hwnd) => {
   if (s && focusedId !== s.id) setFocus(s.id);
 });
 
-// Editors put a marker in their title while a file has unsaved changes:
+// Apps put a marker in their title while a file has unsaved changes:
 // "*name" (Notepad, Notepad++), "name *" (Kate), "● name" (VS Code),
 // "name •" (Sublime Text).
 const UNSAVED = /^[*●]\s*|\s[*•](?=\s|$)/u;
@@ -639,42 +673,17 @@ function appTitle(s, title) {
     s.el.classList.toggle('unsaved', unsaved);
     s.el.querySelector('.status').textContent = unsaved ? 'unsaved' : '';
     renderTabs();
-    // Saved: a file Claude edited meanwhile can be shown now (linked editors).
-    if (!unsaved && s.pendingFile) {
-      const next = s.pendingFile;
-      s.pendingFile = null;
-      setTimeout(() => showInEditor(s, next));
-    }
   }
   // Notepad++ titles start with the file's full path; the name is enough.
   autoTitle(s, title.replace(UNSAVED, ' ').replace(/\s+/g, ' ').trim().replace(/^[a-z]:\\(?:[^\\]*\\)*/i, ''));
 }
 
-// ---- opening files in an editor pane
+// ---- opening files in an editor pane (see editor.js)
 
-let editors = [];
-deck.editors().then((list) => { editors = list; });
-
-// The editor used last comes first.
-const editorsByUse = () => {
-  const last = localStorage.getItem('vibecmd.editor');
-  return [...editors].sort((a, b) => (b.name === last) - (a.name === last));
-};
-
-const appSpec = (editor, file) => ({
-  exe: editor.exe, flags: editor.flags, file, args: [editor.flags, `"${file}"`].filter(Boolean).join(' '),
-});
-
-// A new pane with `file` open in `editor`, which is started and docked there.
+// A new editor pane with `file` open (a new, empty file for null).
 // `keepFocus`: opened for another pane (a linked Claude), which keeps focus.
-function openFileInPane(editor, file, { targetId, side, keepFocus } = {}) {
-  localStorage.setItem('vibecmd.editor', editor.name);
-  const s = createSession({
-    kind: 'app',
-    cwd: file.replace(/[\\/][^\\/]*$/, ''),
-    title: folderName(file),
-    app: appSpec(editor, file),
-  });
+function openFileInPane(file, { targetId, side, keepFocus } = {}) {
+  const s = createSession({ kind: 'editor', cwd: file ? file.replace(/[\\/][^\\/]*$/, '') : undefined, files: file ? [file] : [] });
   activeTab.fresh = false;
   if (side) insertAt(s.id, targetId ?? null, side);
   else autoPlace(s.id, focusedId);
@@ -684,43 +693,21 @@ function openFileInPane(editor, file, { targetId, side, keepFocus } = {}) {
   return s;
 }
 
-// Resolves the editor to use: asks with a menu only if there's a choice.
-function chooseEditor(x, y) {
-  return new Promise((resolve) => {
-    const list = editorsByUse();
-    if (list.length <= 1) { resolve(list[0] || null); return; }
-    let picked = null;
-    showMenu(x, y, list.map((e) => ({ label: `Edit in ${e.name}`, kind: 'app', run: () => { picked = e; } })));
-    const close = popup;
-    // A pick runs right after the menu closes, so look once that's done.
-    popup = () => { close(); setTimeout(() => resolve(picked)); };
-  });
-}
-
 // "Open file…" from a pane's menu or wheel: the file dialog starts in that
 // pane's folder, and the editor goes where the preview showed.
 async function openFileFromMenu(ctx, preview) {
-  if (!editors.length) {
-    alert(IS_WIN ? 'No editor found (looked for Notepad++, Kate, VS Code, Sublime Text and Notepad).'
-      : 'Editor panes are Windows only for now.');
-    return;
-  }
   const file = await deck.pickFile({ defaultPath: ctx?.s.cwd || defaultCwd, title: 'Open which file?', buttonLabel: 'Open in editor' });
-  if (!file) return;
-  const editor = await chooseEditor(ctx?.x ?? innerWidth / 2, ctx?.y ?? innerHeight / 2);
-  if (editor) openFileInPane(editor, file, { targetId: ctx?.s.id ?? null, side: preview?.side ?? 'right' });
+  if (file) openFileInPane(file, { targetId: ctx?.s.id ?? null, side: preview?.side ?? 'right' });
 }
 
 // ---- linked editors
 //
 // A Claude pane can be linked to an editor pane: every file Claude edits or
-// writes (reported by its PostToolUse hook, see main.js) is opened there. The
-// editor is restarted on the new file, so this only happens while it has no
-// unsaved changes; otherwise the file waits until you've saved. A link set up
-// with "a new … pane" opens that pane at Claude's first edit.
+// writes (reported by its PostToolUse hook, see main.js) opens there, or comes
+// to the front if it's open already, with the lines Claude changed lit up. A
+// link set up with "a new editor pane" opens that pane at Claude's first edit.
 
 const sessionByUid = (uid) => [...sessions.values()].find((x) => x.uid === uid);
-const editorFor = (exe) => editors.find((e) => e.exe.toLowerCase() === (exe || '').toLowerCase());
 const samePath = (a, b) => (IS_WIN ? a.toLowerCase() === b.toLowerCase() : a === b);
 
 // Runs `fn` with tab `t` loaded as the current one, without showing it.
@@ -736,61 +723,43 @@ deck.onEdited((ptyId, file) => {
   const s = sessionForPty(ptyId);
   if (!s || (!s.link && !s.linkEditor)) return;
   const target = s.link && sessionByUid(s.link);
-  if (target) { showInEditor(target, file); return; }
-  const editor = editors.find((e) => e.name === s.linkEditor);
-  if (!editor) return;
+  if (target?.kind === 'editor') { showInEditor(target, file); return; }
+  if (!s.linkEditor) return;
   // First edit: the editor pane opens to the right of Claude's.
-  const e = createSession({ kind: 'app', cwd: file.replace(/[\\/][^\\/]*$/, ''), title: folderName(file), app: appSpec(editor, file) });
+  const e = createSession({ kind: 'editor', cwd: file.replace(/[\\/][^\\/]*$/, ''), files: [file] });
   inTab(tabOf(s.id), () => (findLeaf(tree, s.id) ? insertAt(e.id, s.id, 'right') : autoPlace(e.id, null)));
   s.link = e.uid;
-  s.linkEditor = null;
+  s.linkEditor = false;
   render();
 });
 
+// A pane not shown yet (another tab) opens the file once it is.
 async function showInEditor(s, file) {
-  if (!sessions.has(s.id)) return;
-  const name = folderName(file);
-  const same = s.app?.file && samePath(s.app.file, file);
-  // Most editors notice the file changed and reload it themselves; Notepad
-  // doesn't, so it's restarted on it.
-  const reloads = !/(^|[\\/])notepad\.exe$/i.test(s.app?.exe || '');
-  if (same && reloads) return;
-  if (s.unsaved || s.switching || s.launching) {
-    s.pendingFile = file;
-    if (s.unsaved) s.el.querySelector('.status').textContent = `unsaved · save to see ${name}`;
+  if (!s.editor) {
+    if (!s.files.some((f) => samePath(f, file))) s.files.push(file);
+    s.file = file;
+    save();
     return;
   }
-  s.app = appSpec({ exe: s.app.exe, flags: s.app.flags ?? editorFor(s.app.exe)?.flags ?? '' }, file);
-  save();
-  // Not shown yet (another tab): it starts on the new file when it is.
-  if (!s.hwnd) {
-    if (s.opened) launchApp(s);
-    return;
-  }
-  s.switching = true;
-  const ok = await closeApp(s);
-  if (ok && sessions.has(s.id)) await launchApp(s);
-  s.switching = false;
-  const next = s.pendingFile;
-  s.pendingFile = null;
-  if (next) showInEditor(s, next);
+  const d = await openInPane(s, file);
+  if (d) reloadDoc(d);
 }
 
 function linkItems(s) {
-  if (!IS_WIN || !s.kind.startsWith('claude')) return [];
+  if (!s.kind.startsWith('claude')) return [];
   const mark = (on, label) => (on ? `✓ ${label}` : label);
-  const here = tabSessionIds(activeTab).map((id) => sessions.get(id)).filter((x) => x.kind === 'app');
+  const here = tabSessionIds(activeTab).map((id) => sessions.get(id)).filter((x) => x.kind === 'editor');
   return [
     { sep: true },
     ...here.map((a) => ({
       label: mark(s.link === a.uid, `Show Claude's edits in "${a.title}"`),
-      run: () => { s.link = a.uid; s.linkEditor = null; save(); },
+      run: () => { s.link = a.uid; s.linkEditor = false; save(); },
     })),
-    ...editorsByUse().map((e) => ({
-      label: mark(!s.link && s.linkEditor === e.name, `Show Claude's edits in a new ${e.name} pane`),
-      run: () => { s.link = null; s.linkEditor = e.name; save(); },
-    })),
-    ...(s.link || s.linkEditor ? [{ label: "Stop showing Claude's edits", run: () => { s.link = s.linkEditor = null; save(); } }] : []),
+    {
+      label: mark(!s.link && s.linkEditor, "Show Claude's edits in a new editor pane"),
+      run: () => { s.link = null; s.linkEditor = true; save(); },
+    },
+    ...(s.link || s.linkEditor ? [{ label: "Stop showing Claude's edits", run: () => { s.link = null; s.linkEditor = false; save(); } }] : []),
   ];
 }
 
@@ -859,8 +828,8 @@ deck.onDockedGone((hwnd) => {
   s.hwnd = null;
   s.busy = false;
   appPlaced.delete(hwnd);
-  // Quitting, or a linked editor switching files: the pane stays.
-  if (s.kind === 'app' && (quitting || s.switching)) return;
+  // Quitting: the pane stays.
+  if (s.kind === 'app' && quitting) return;
   closeSession(s.id);
 });
 
@@ -921,6 +890,8 @@ async function ensureOpened(s) {
     else launchApp(s);
     return;
   }
+  if (s.kind === 'editor') { openEditorPane(s); return; }
+  if (s.kind === 'browser') { openBrowserPane(s); return; }
   s.term.open(s.termEl);
   useWebgl(s);
   fitSession(s);
@@ -1025,7 +996,8 @@ function respawn(s) {
 }
 
 function fitSession(s) {
-  if (s.kind === 'app') { syncApps(); return; }
+  if (s.kind === 'app' || s.kind === 'browser') { syncApps(); return; }
+  if (s.kind === 'editor') return;
   if (!s.opened || !s.el.isConnected || s.termEl.clientWidth === 0) return;
   try { s.fit.fit(); } catch { return; }
   if (s.ptyId != null) deck.resize(s.ptyId, s.term.cols, s.term.rows);
@@ -1040,7 +1012,9 @@ function rememberCwd(dir) {
 }
 
 // Claude sessions always ask where to open, starting from the last folder picked.
-async function newSession(kind, { cwd, near, targetId, side, pick = true } = {}) {
+// `extra`: more for createSession (a browser pane's url, say).
+async function newSession(kind, { cwd, near, targetId, side, pick = true, extra } = {}) {
+  if (kind === 'editor') { openFileInPane(null, { targetId: targetId ?? null, side }); return; }
   if (kind.startsWith('claude') && pick) {
     const dir = await deck.pickFolder({
       defaultPath: cwd || defaultCwd,
@@ -1051,7 +1025,7 @@ async function newSession(kind, { cwd, near, targetId, side, pick = true } = {})
     cwd = dir;
     rememberCwd(dir);
   }
-  const s = createSession({ kind, cwd });
+  const s = createSession({ kind, cwd, ...extra });
   activeTab.fresh = false;
   if (side) insertAt(s.id, targetId ?? null, side);
   else autoPlace(s.id, near ?? focusedId);
@@ -1070,9 +1044,11 @@ async function closeSession(id, force = false) {
   if (!force && s.busy && !s.exited &&
       !confirm(`${busyWhat(s)} in "${s.title}". Close it and stop that?`)) return;
   if (s.kind === 'app' && !await closeApp(s)) return;
+  if (s.kind === 'editor' && !await closeEditorPane(s)) return;
   if (!sessions.has(id)) return;
   if (s.ptyId != null) deck.kill(s.ptyId);
   if (s.hwnd) deck.closeWindow(s.hwnd);
+  if (s.kind === 'browser') closeBrowserPane(s);
   s.term.dispose();
   sessions.delete(id);
   removeFromTree(id);
@@ -1105,9 +1081,16 @@ function toggleZoom(id) {
 function setFocus(id, focusTerm = false) {
   focusedId = id;
   for (const s of sessions.values()) s.el.classList.toggle('focused', s.id === id);
-  const s = sessions.get(id);
-  if (focusTerm && s?.kind === 'app') { if (s.hwnd) deck.focusApp(s.hwnd); }
-  else if (focusTerm) s?.term.focus();
+  if (focusTerm) focusPane(sessions.get(id));
+}
+
+// Gives the keyboard to a pane: its terminal, editor, page or app window.
+function focusPane(s) {
+  if (!s) return;
+  if (s.kind === 'app') { if (s.hwnd) deck.focusApp(s.hwnd); }
+  else if (s.kind === 'editor') s.editor?.focus();
+  else if (s.kind === 'browser') { if (s.browserId != null) deck.browserDo(s.browserId, 'focus'); }
+  else s.term.focus();
 }
 
 // ---------------------------------------------------------------- tabs
@@ -1161,12 +1144,22 @@ async function closeTab(t) {
     if (parked.includes(id)) unpark(id);
     if (!await closeApp(s)) return;
   }
+  // Same for editors with unsaved files.
+  for (const id of ids) {
+    const s = sessions.get(id);
+    if (s?.kind !== 'editor' || !s.docs.some(isDirty)) continue;
+    switchTab(t);
+    if (parked.includes(id)) unpark(id);
+    if (!await closeEditorPane(s)) return;
+  }
   if (!tabs.includes(t)) return;
   ids = tabSessionIds(t);
   for (const id of ids) {
     const s = sessions.get(id);
     if (s.ptyId != null) deck.kill(s.ptyId);
     if (s.hwnd) deck.closeWindow(s.hwnd);
+    if (s.kind === 'editor') closeEditorPane(s);
+    if (s.kind === 'browser') closeBrowserPane(s);
     s.term.dispose();
     sessions.delete(id);
   }
@@ -1313,7 +1306,9 @@ function render() {
     }
     // App windows in other tabs, parked or behind a maximized pane hide.
     syncApps();
-    if (focusedId != null) sessions.get(focusedId)?.term.focus();
+    // An app window isn't handed the keyboard here; clicking it does that.
+    const f = sessions.get(focusedId);
+    if (f && f.kind !== 'app') focusPane(f);
   });
 }
 
@@ -1475,11 +1470,11 @@ async function dropFromExplorer(e, targetId, side) {
   // A file (not a folder) can also be opened in an editor pane.
   const path = deck.pathForFile(file);
   const kind = await chooseKind(e.clientX, e.clientY, cwd, path !== cwd ? path : null);
-  if (kind?.editor) openFileInPane(kind.editor, path, { targetId, side });
+  if (kind === 'editor') openFileInPane(path, { targetId, side });
   else if (kind) newSession(kind, { cwd, targetId, side, pick: false });
 }
 
-// Resolves a session kind, { editor } for an editor pane on `file`, or null.
+// Resolves a session kind ('editor' for an editor pane on `file`), or null.
 function chooseKind(x, y, cwd, file) {
   return new Promise((resolve) => {
     const menu = document.createElement('div');
@@ -1494,13 +1489,13 @@ function chooseKind(x, y, cwd, file) {
       b.addEventListener('click', () => done(kind));
       menu.append(b);
     }
-    if (file && editors.length) menu.append(document.createElement('hr'));
-    for (const editor of file ? editorsByUse() : []) {
+    if (file) {
+      menu.append(document.createElement('hr'));
       const b = document.createElement('button');
       b.className = 'new';
-      b.dataset.kind = 'app';
-      b.textContent = `Edit in ${editor.name}`;
-      b.addEventListener('click', () => done({ editor }));
+      b.dataset.kind = 'editor';
+      b.textContent = 'Edit it here';
+      b.addEventListener('click', () => done('editor'));
       menu.append(b);
     }
     const onKey = (ev) => { if (ev.key === 'Escape') done(null); };
@@ -1582,7 +1577,9 @@ const ACTIONS = {
   cmd: { label: SHELL_LABEL, kind: 'cmd', place: true },
   powershell: { label: 'PowerShell', kind: 'powershell', place: true },
   duplicate: { label: 'Duplicate', place: true },
-  editor: { label: 'Open file…', kind: 'app', place: true },
+  editor: { label: 'Open file…', kind: 'editor', place: true },
+  newfile: { label: 'New file', kind: 'editor', place: true },
+  browser: { label: 'Browser', kind: 'browser', place: true },
   park: { label: 'Park' },
   zoom: { label: 'Maximize' },
   popout: { label: 'Pop out' },
@@ -1590,8 +1587,7 @@ const ACTIONS = {
   rename: { label: 'Rename' },
   none: { label: '(empty)' },
 };
-// Editor panes need docking, which is Windows only.
-const MENU_ACTIONS = ['claude', 'duplicate', 'cmd', 'powershell', ...(IS_WIN ? ['editor'] : [])];
+const MENU_ACTIONS = ['claude', 'duplicate', 'cmd', 'powershell', 'editor', 'browser'];
 
 // Clockwise from the right: the 8 sectors of the wheel.
 const SLOTS = ['right', 'downRight', 'down', 'downLeft', 'left', 'upLeft', 'up', 'upRight'];
@@ -1626,7 +1622,7 @@ function setPreview(p, on) {
 
 function duplicateKind(s) {
   if (s.kind.startsWith('claude')) return 'claude';
-  return s.kind === 'docked' || s.kind === 'app' ? 'cmd' : s.kind;
+  return s.kind === 'docked' || s.kind === 'app' || s.kind === 'editor' ? 'cmd' : s.kind;
 }
 
 function runAction(name, ctx, preview) {
@@ -1641,6 +1637,8 @@ function runAction(name, ctx, preview) {
     if (!kind) return;
     newSession(kind, {
       cwd: s?.cwd, targetId: s?.id ?? null, side: preview?.side ?? 'right', pick: name !== 'duplicate',
+      // A duplicated browser pane shows the same page.
+      extra: name === 'duplicate' && s?.kind === 'browser' ? { url: s.url } : undefined,
     });
   } else if (s) {
     if (name === 'park') park(s.id);
@@ -1705,7 +1703,14 @@ function openPaneMenu(ctx, x, y) {
   const items = MENU_ACTIONS
     .filter((n) => ctx || n !== 'duplicate')
     .map((n) => ({ label: ACTIONS[n].label, kind: ACTIONS[n].kind || (ctx && duplicateKind(ctx.s)), run: () => runAction(n, ctx, preview) }));
-  if (ctx?.s.term.hasSelection()) {
+  if (ctx?.s.kind === 'editor') {
+    items.splice(MENU_ACTIONS.indexOf('editor') + 1, 0, { label: ACTIONS.newfile.label, kind: 'editor', run: () => runAction('newfile', ctx, preview) });
+    items.push(...editorMenuItems(ctx.s));
+    const text = editorSelection(ctx.s);
+    for (const target of text ? claudeTargets(ctx.s) : []) {
+      items.push({ label: `Send to ${target.label}`, kind: 'claude', run: () => pasteToClaude(text, target.s) });
+    }
+  } else if (ctx?.s.term.element && ctx.s.term.hasSelection()) {
     items.push({ sep: true }, {
       label: 'Copy',
       run: () => {
@@ -1854,6 +1859,7 @@ function templateOf(t) {
       return {
         type: 'leaf', kind: s.kind === 'claude-continue' ? 'claude' : s.kind, cwd: s.cwd, title: s.title, color: s.color,
         uid: s.uid, link: s.link, linkEditor: s.linkEditor, run: s.run, app: s.app ? { ...s.app } : null,
+        ...(s.kind === 'editor' ? editorState(s) : {}), url: s.url,
       };
     }
     const children = node.children.map(ser);
@@ -1879,6 +1885,7 @@ function openLayout(l, tree = l.tree) {
       const s = createSession({
         kind: node.kind, cwd: node.cwd, title: node.title, color: node.color,
         run: node.run, app: node.app, linkEditor: node.linkEditor, link: node.link,
+        files: node.files, file: node.file, url: node.url,
       });
       if (node.uid) uids.set(node.uid, s.uid);
       made.push(s);
@@ -1917,10 +1924,10 @@ function rebaseLayout(tree, from, to) {
   const walk = (n) => {
     if (n.type === 'split') { n.children.forEach(walk); return; }
     n.cwd = move(n.cwd);
-    if (n.app?.file) {
-      n.app.file = move(n.app.file);
-      n.app.args = [n.app.flags, `"${n.app.file}"`].filter(Boolean).join(' ');
-    }
+    if (n.files) n.files = n.files.map(move);
+    if (n.file) n.file = move(n.file);
+    // Layouts saved while editor panes docked an outside editor.
+    if (n.app?.file) n.app.file = move(n.app.file);
   };
   walk(out);
   return out;
@@ -2093,7 +2100,9 @@ const leafCount = (node) => (node.type === 'leaf' ? 1 : node.children.reduce((n,
 
 // ---- layout editor: the template as boxes; change any pane, split, remove
 
-const EDIT_KINDS = { claude: 'Claude', 'claude-continue': 'Claude (continue last chat)', cmd: SHELL_LABEL, powershell: 'PowerShell' };
+const EDIT_KINDS = {
+  claude: 'Claude', 'claude-continue': 'Claude (continue last chat)', cmd: SHELL_LABEL, powershell: 'PowerShell', editor: 'Editor', browser: 'Browser',
+};
 
 function openLayoutEditor(layout) {
   const work = { name: layout.name, tree: structuredClone(layout.tree) };
@@ -2141,11 +2150,17 @@ function openLayoutEditor(layout) {
     const box = document.createElement('div');
     box.className = 'ed-leaf';
     if (node.color) box.style.setProperty('--pc', node.color);
+    // Saved while editor panes docked an outside editor.
+    if (node.kind === 'app' && node.app?.file) {
+      node.kind = 'editor';
+      node.files = [node.app.file];
+      node.app = null;
+    }
     const kind = document.createElement('select');
     for (const [k, label] of Object.entries(EDIT_KINDS)) kind.add(new Option(label, k));
-    // An editor pane stays one (its editor and file are set below).
+    // A docked app stays one.
     if (node.kind === 'app') {
-      kind.add(new Option(`Editor: ${editorFor(node.app?.exe)?.name || folderName(node.app?.exe || 'app')}`, 'app'));
+      kind.add(new Option(`App: ${folderName(node.app?.exe || 'app')}`, 'app'));
       kind.disabled = true;
     }
     kind.value = node.kind;
@@ -2155,16 +2170,23 @@ function openLayoutEditor(layout) {
     title.addEventListener('input', () => { node.title = title.value; });
     const dir = document.createElement('button');
     dir.className = 'ed-dir';
-    if (node.kind === 'app') {
-      const file = node.app?.file;
-      dir.textContent = file ? `📄 ${file}` : '📄 (no file)';
-      dir.title = file || '';
+    if (node.kind === 'editor') {
+      const files = node.files || [];
+      dir.textContent = files.length ? `📄 ${files.map(folderName).join(', ')}` : '📄 (no file, click to pick)';
+      dir.title = files.join('\n');
       dir.addEventListener('click', async () => {
-        const f = await deck.pickFile({ defaultPath: file || node.cwd, title: 'File for this editor pane' });
+        const f = await deck.pickFile({ defaultPath: files[0] || node.cwd, title: 'File for this editor pane' });
         if (!f) return;
-        node.app = appSpec({ exe: node.app.exe, flags: node.app.flags ?? editorFor(node.app.exe)?.flags ?? '' }, f);
+        node.files = [f];
+        node.file = f;
         node.cwd = f.replace(/[\\/][^\\/]*$/, '');
         draw();
+      });
+    } else if (node.kind === 'browser') {
+      dir.textContent = `🌐 ${node.url || HOME_URL}`;
+      dir.addEventListener('click', async () => {
+        const u = await askText('Address for this browser pane', node.url || '');
+        if (u) { node.url = toUrl(u); draw(); }
       });
     } else {
       dir.textContent = `📁 ${node.cwd}`;
@@ -2517,6 +2539,10 @@ function sendToClaude(from, to) {
   const text = from.psel ? promptSelText(from) : from.term.getSelection();
   from.term.clearSelection();
   from.psel = null;
+  pasteToClaude(text, to);
+}
+
+function pasteToClaude(text, to) {
   if (!text || to.ptyId == null) return;
   // Without bracketed paste every line break would send the prompt; Alt+Enter
   // is a new line in Claude's prompt instead.
@@ -2640,13 +2666,22 @@ function handleTermKey(s, e) {
 window.addEventListener('keydown', (e) => {
   // Typing a tab or pane name.
   if (document.activeElement?.isContentEditable) return;
+  // Tab in a terminal, editor or text box is its own.
+  const inPane = !!document.activeElement?.closest('.xterm, .editor-pane, input, textarea, select');
+  if (!appShortcut(e, inPane)) return;
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
+
+// Does what an app shortcut says; false if `e` isn't one. Also used for keys
+// pressed in a browser pane's page (see browser.js).
+function appShortcut(e, inPane = true) {
   const key = e.key.toUpperCase();
-  const inTerminal = !!document.activeElement?.closest('.xterm');
   if (isCycleKey(e)) {
     cyclePane(e.shiftKey ? -1 : 1);
   } else if (e.ctrlKey && !e.altKey && (key === 'TAB' || key === 'PAGEUP' || key === 'PAGEDOWN')) {
     cycleTab(key === 'PAGEUP' || (key === 'TAB' && e.shiftKey) ? -1 : 1);
-  } else if (key === 'TAB' && !e.ctrlKey && !e.altKey && !inTerminal) {
+  } else if (key === 'TAB' && !e.ctrlKey && !e.altKey && !inPane) {
     // No pane focused (e.g. an empty tab): Tab / Shift+Tab switch tabs instead
     // of walking focus through the toolbar buttons.
     cycleTab(e.shiftKey ? -1 : 1);
@@ -2657,16 +2692,15 @@ window.addEventListener('keydown', (e) => {
     else if (key === 'P') openSwitcher();
     else if (key === 'W' && focusedId != null) closeSession(focusedId);
     else if (key === 'ENTER' && focusedId != null) toggleZoom(focusedId);
-    else return;
+    else return false;
   } else if (e.altKey && e.shiftKey && !e.ctrlKey && key.startsWith('ARROW')) {
     // Not Ctrl+Shift+arrows: those select a word at a time (see "keyboard selection").
     moveFocus(key.slice(5).toLowerCase());
   } else {
-    return;
+    return false;
   }
-  e.preventDefault();
-  e.stopPropagation();
-}, true);
+  return true;
+}
 
 // A clicked button would otherwise keep keyboard focus, so Space / Enter would
 // press it again instead of going anywhere useful.
@@ -2678,7 +2712,8 @@ document.addEventListener('click', (e) => {
 // Coming back to VibeCMD (or after a button took focus away), typing goes to
 // the focused pane again, and its cursor shows as focused.
 window.addEventListener('focus', () => {
-  if (document.activeElement === document.body && focusedId != null) sessions.get(focusedId)?.term.focus();
+  const s = sessions.get(focusedId);
+  if (document.activeElement === document.body && s && s.kind !== 'app' && s.kind !== 'browser') focusPane(s);
 });
 
 function moveFocus(dir) {
@@ -2721,6 +2756,8 @@ function save() {
       claudeId: s.claudeId, fontSize: s.term.options.fontSize, color: s.color, renamed: s.renamed,
       app: s.app || undefined,
       uid: s.uid, link: s.link || undefined, linkEditor: s.linkEditor || undefined, run: s.run || undefined,
+      ...(s.kind === 'editor' ? { ...editorState(s), wrap: s.wrap || undefined } : {}),
+      url: s.url || undefined,
     };
   };
   // Docked CMD windows can't be reopened after a restart, so they're left out.
@@ -2826,6 +2863,7 @@ function applyTheme(name) {
   setThemeBg(t.term.background);
   for (const [k, v] of Object.entries(t.ui)) document.documentElement.style.setProperty(`--${k}`, v);
   for (const s of sessions.values()) s.term.options.theme = t.term;
+  setEditorTheme();
   $theme.blur();
   save();
 }

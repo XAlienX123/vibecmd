@@ -1,4 +1,5 @@
-# Installs (or updates) VibeCMD from the latest GitHub release.
+# Installs (or updates) VibeCMD from the latest GitHub release, which is
+# built from main on every push.
 #   PowerShell:  irm https://raw.githubusercontent.com/XAlienX123/vibecmd/main/install.ps1 | iex
 #   CMD:         powershell -c "irm https://raw.githubusercontent.com/XAlienX123/vibecmd/main/install.ps1 | iex"
 # Runs the installer silently for the current user, so no admin prompt.
