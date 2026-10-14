@@ -245,6 +245,7 @@ button.new[data-kind="powershell"] { border-left: 3px solid var(--ps); }
 button.new[data-kind="app"] { border-left: 3px solid var(--docked); }
 .wheel span[data-kind="app"] { border-left: 3px solid var(--docked); }
 /* A docked app's own window sits over this, clear of the rounded corners. */
+.kind-menu { max-height: calc(100vh - 16px); overflow-y: auto; }
 .pane.app .term {
   margin: 0 3px 3px;
   background: var(--panel);

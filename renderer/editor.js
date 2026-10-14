@@ -313,6 +313,7 @@ async function openEditorPane(s) {
     id: 'vibecmd.wrap', label: 'Toggle word wrap', keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyZ],
     run: () => toggleWrap(s),
   });
+  addNotepadKeys(s);
   const files = s.files;
   const active = s.file;
   for (const f of files) await openInPane(s, f, { show: false });
@@ -320,6 +321,51 @@ async function openEditorPane(s) {
   if (first) showDoc(s, first);
   else renderFiles(s);
   if (focusedId === s.id) s.editor.focus();
+}
+
+// Notepad++'s line and case shortcuts, on top of Monaco's own. They take over
+// the keys Monaco uses for other things (Ctrl+D, Ctrl+U, Ctrl+L...).
+const NOTEPAD_KEYS = [
+  ['Duplicate line', 'editor.action.copyLinesDownAction', 'CtrlCmd | KeyD'],
+  ['Delete line', 'editor.action.deleteLines', 'CtrlCmd | KeyL'],
+  ['Move line up', 'editor.action.moveLinesUpAction', 'CtrlCmd | Shift | UpArrow'],
+  ['Move line down', 'editor.action.moveLinesDownAction', 'CtrlCmd | Shift | DownArrow'],
+  ['Join lines', 'editor.action.joinLines', 'CtrlCmd | KeyJ'],
+  ['To lowercase', 'editor.action.transformToLowercase', 'CtrlCmd | KeyU'],
+  ['To UPPERCASE', 'editor.action.transformToUppercase', 'CtrlCmd | Shift | KeyU'],
+  ['Toggle line comment', 'editor.action.commentLine', 'CtrlCmd | KeyQ'],
+  ['Toggle block comment', 'editor.action.blockComment', 'CtrlCmd | Shift | KeyQ'],
+];
+
+function addNotepadKeys(s) {
+  const code = (name) => (name === 'CtrlCmd' ? monaco.KeyMod.CtrlCmd : name === 'Shift' ? monaco.KeyMod.Shift : monaco.KeyCode[name]);
+  for (const [label, id, keys] of NOTEPAD_KEYS) {
+    s.editor.addAction({
+      id: `vibecmd.${id}`,
+      label,
+      keybindings: [keys.split(' | ').reduce((sum, k) => sum | code(k), 0)],
+      run: (ed) => ed.getAction(id)?.run(),
+    });
+  }
+}
+
+// Line endings and encoding are the file's, shown in the status line and
+// changed from the pane menu. Both count as an unsaved change.
+function setEol(d, crlf) {
+  d.model.setEOL(crlf ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+}
+
+function setEncoding(d, encoding, bom) {
+  if (d.encoding === encoding && d.bom === bom) return;
+  d.encoding = encoding;
+  d.bom = bom;
+  d.saved = 0; // never a version the model has, so it's unsaved until saved
+  refreshDoc(d);
+}
+
+function toggleSymbols(s) {
+  s.symbols = !s.symbols;
+  s.editor.updateOptions({ renderWhitespace: s.symbols ? 'all' : 'selection', renderControlCharacters: !!s.symbols });
 }
 
 // Opens `file` (a new file for null) in a pane, or switches to it if it's open
@@ -541,6 +587,23 @@ function editorMenuItems(s) {
     { label: 'Replace… (Ctrl+H)', run: run('editor.action.startFindReplaceAction') },
     { label: 'Go to line… (Ctrl+G)', run: run('editor.action.gotoLine') },
     { label: s.wrap ? '✓ Word wrap (Alt+Z)' : 'Word wrap (Alt+Z)', run: () => toggleWrap(s) },
+    { label: s.symbols ? '✓ Show spaces and tabs' : 'Show spaces and tabs', run: () => { toggleSymbols(s); s.editor.focus(); } },
+    { sep: true },
+    { label: 'Duplicate line (Ctrl+D)', run: run('vibecmd.editor.action.copyLinesDownAction') },
+    { label: 'Delete line (Ctrl+L)', run: run('vibecmd.editor.action.deleteLines') },
+    { label: 'Toggle comment (Ctrl+Q)', run: run('vibecmd.editor.action.commentLine') },
+    { label: 'To UPPERCASE (Ctrl+Shift+U)', run: run('vibecmd.editor.action.transformToUppercase') },
+    { label: 'To lowercase (Ctrl+U)', run: run('vibecmd.editor.action.transformToLowercase') },
+    { label: 'Sort lines', run: run('editor.action.sortLinesAscending') },
+    { label: 'Trim trailing spaces', run: run('editor.action.trimTrailingWhitespace') },
+    { sep: true },
+    s.active.model.getEOL() === '\r\n'
+      ? { label: 'Line endings: to Unix (LF)', run: () => setEol(s.active, false) }
+      : { label: 'Line endings: to Windows (CRLF)', run: () => setEol(s.active, true) },
+    { label: 'Encoding: UTF-8', run: () => setEncoding(s.active, 'utf8', false) },
+    { label: 'Encoding: UTF-8 with BOM', run: () => setEncoding(s.active, 'utf8', true) },
+    { label: 'Encoding: UTF-16 LE', run: () => setEncoding(s.active, 'utf16le', true) },
+    { label: 'Encoding: ANSI', run: () => setEncoding(s.active, 'latin1', false) },
     { sep: true },
     { label: 'Save (Ctrl+S)', run: () => saveDoc(s.active, s) },
     { label: 'Save as… (Ctrl+Shift+S)', run: () => saveDocAs(s, s.active) },

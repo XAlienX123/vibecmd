@@ -11,7 +11,7 @@
 //
 // winhelper <VibeCMD hwnd>: watches for windows being dragged.
 //   out: drag-move <hwnd> <x> <y> <over>   while a window is being dragged
-//        drag-end <hwnd> <x> <y> <over>    (screen pixels; over=1 if VibeCMD is under the cursor)
+//        drag-end <hwnd> <x> <y> <over>    (screen pixels; over=1 if VibeCMD is under the cursor and Shift is held)
 //        embedded <hwnd> <base64 json>     {title, app, exe, args}; app windows have exe/args
 //        error <hwnd> <why> | released <hwnd> | released-all
 //        closed <hwnd> | closed-all
@@ -77,6 +77,8 @@ static class WinHelper
         SetWinEventHook(EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZEEND, IntPtr.Zero, hookProc, 0, 0, WINEVENT_OUTOFCONTEXT);
         focusProc = OnFocus;
         SetWinEventHook(EVENT_OBJECT_FOCUS, EVENT_OBJECT_FOCUS, IntPtr.Zero, focusProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+        mouseProc = OnMouse;
+        SetWindowsHookEx(WH_MOUSE_LL, mouseProc, IntPtr.Zero, 0);
         watchTimer = new Timer(_ => WatchEmbedded(), null, 700, 700);
 
         var reader = new Thread(() =>
@@ -133,7 +135,8 @@ static class WinHelper
         if (h == IntPtr.Zero) return;
         POINT p;
         GetCursorPos(out p);
-        bool over = HostIsUnder(p, h);
+        // Only while Shift is held: a plain drag over VibeCMD just moves the window.
+        bool over = ShiftDown() && HostIsUnder(p, h);
         if (kind == "drag-move") SeeThrough(h, over);
         Emit(kind + " " + h.ToInt64() + " " + p.X + " " + p.Y + " " + (over ? 1 : 0));
     }
@@ -168,6 +171,8 @@ static class WinHelper
         }
     }
 
+    static bool ShiftDown() { return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0; }
+
     // True if, ignoring the window being dragged, VibeCMD is the topmost
     // window under the cursor (so dropping onto a window covering it doesn't count).
     static bool HostIsUnder(POINT p, IntPtr ignore)
@@ -196,6 +201,7 @@ static class WinHelper
         if (a[0] == "release-all") { ReleaseAll(); Emit("released-all"); return; }
         if (a[0] == "close-all") { CloseAll(); Emit("closed-all"); return; }
         if (a[0] == "close-apps") { Background(CloseApps); return; }
+        if (a[0] == "list") { Background(ListWindows); return; }
         if (a[0] == "launch") { string id0 = a[1], spec = a[2]; Background(() => Launch(id0, spec)); return; }
         long id = long.Parse(a[1]);
         IntPtr h = new IntPtr(id);
@@ -236,6 +242,22 @@ static class WinHelper
                 Background(() => Emit("close-app " + id + (CloseApp(e) ? " 1" : " 0")));
                 break;
         }
+    }
+
+    // The visible windows that could be docked, for the "Dock a window" menu.
+    static void ListWindows()
+    {
+        var sb = new StringBuilder("[");
+        EnumWindows((w, _) =>
+        {
+            if (!IsWindowVisible(w) || !Dockable(w)) return true;
+            string title = TitleOf(w);
+            if (string.IsNullOrWhiteSpace(title)) return true;
+            if (sb.Length > 1) sb.Append(',');
+            sb.Append("{\"id\":\"").Append(w.ToInt64()).Append("\",\"title\":").Append(Json(title)).Append('}');
+            return true;
+        }, IntPtr.Zero);
+        Emit("windows - " + Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.Append(']').ToString())));
     }
 
     static void Background(ThreadStart work)
@@ -422,6 +444,41 @@ static class WinHelper
         lastFocus = IntPtr.Zero;
     }
 
+    // Some apps (VS Code and other Chromium ones) don't take the keyboard
+    // when clicked inside another window, so a click on a docked app moves it
+    // there by hand.
+    const int WH_MOUSE_LL = 14, WM_LBUTTONDOWN = 0x0201;
+    delegate IntPtr MouseProc(int code, IntPtr wParam, IntPtr lParam);
+    static MouseProc mouseProc;
+
+    static IntPtr OnMouse(int code, IntPtr wParam, IntPtr lParam)
+    {
+        if (code >= 0 && wParam.ToInt64() == WM_LBUTTONDOWN)
+        {
+            POINT p;
+            GetCursorPos(out p);
+            IntPtr under = WindowFromPoint(p);
+            if (under != IntPtr.Zero && GetAncestor(under, GA_ROOT) == host)
+            {
+                for (IntPtr w = under; w != IntPtr.Zero && w != host; w = GetParent(w))
+                {
+                    Embedded e;
+                    lock (gate) embedded.TryGetValue(w.ToInt64(), out e);
+                    if (e == null || !e.App) continue;
+                    IntPtr target = w;
+                    // After the click itself has been handled.
+                    Background(() => { Thread.Sleep(30); FocusApp(target); });
+                    break;
+                }
+            }
+        }
+        return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+    }
+
+    [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int id, MouseProc proc, IntPtr module, uint thread);
+    [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT p);
+
     // Docked windows share VibeCMD's input queue, so joining it lets us move
     // the keyboard into the app.
     static void FocusApp(IntPtr h)
@@ -429,7 +486,9 @@ static class WinHelper
         uint ignored;
         uint me = GetCurrentThreadId(), hostThread = GetWindowThreadProcessId(host, out ignored);
         AttachThreadInput(me, hostThread, true);
-        SetFocus(h);
+        // Chromium apps (VS Code, Discord...) take keys in an inner window.
+        IntPtr inner = FindWindowEx(h, IntPtr.Zero, "Chrome_RenderWidgetHostHWND", null);
+        SetFocus(inner != IntPtr.Zero ? inner : h);
         AttachThreadInput(me, hostThread, false);
     }
 
@@ -665,6 +724,7 @@ static class WinHelper
     [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
     [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr h, int cmd);
     [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
     [DllImport("user32.dll")] static extern bool AttachThreadInput(uint from, uint to, bool attach);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
@@ -676,6 +736,8 @@ static class WinHelper
     [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG msg);
     [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG msg);
     [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+    const int VK_SHIFT = 0x10;
     [DllImport("user32.dll")] static extern IntPtr GetTopWindow(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);

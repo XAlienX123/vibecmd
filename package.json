@@ -1,6 +1,6 @@
 {
   "name": "vibecmd",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Tiling workspace for Claude Code and terminal sessions (Windows and Linux)",
   "main": "main.js",
   "scripts": {
@@ -47,6 +47,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "linuxdock.js",
       "renderer/**",
       "scripts/session-hook.js",
       "native/**",

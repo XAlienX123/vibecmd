@@ -449,6 +449,39 @@ function startHelper() {
   });
 }
 
+// Linux: needs X11 (or XWayland) and xdotool; without them docking isn't offered.
+let linuxDock = null;
+let linuxWindows = null;
+
+// Resolves once the helper is up (or known not to be), so saved apps that
+// restart with the window don't ask too early.
+let helperReady = Promise.resolve();
+
+function startLinuxDock() {
+  if (process.platform !== 'linux') return;
+  helperReady = (async () => {
+    const dock = require('./linuxdock');
+    if (!await dock.available()) return;
+    linuxWindows = dock.listWindows;
+    const self = win.getNativeWindowHandle().readUInt32LE(0);
+    const origin = () => {
+      const c = win.getContentBounds();
+      const sf = screen.getDisplayMatching(win.getBounds()).scaleFactor;
+      return { x: c.x * sf, y: c.y * sf, w: c.width * sf, h: c.height * sf };
+    };
+    linuxDock = dock.createLinuxDock({ emit: onHelperLine, origin, self });
+    helper = { stdin: { write: (line) => linuxDock.command(line.trim()) } };
+    for (const ev of ['move', 'resize']) win.on(ev, () => linuxDock.reposition());
+    app.on('will-quit', () => linuxDock?.dispose());
+  })();
+}
+
+ipcMain.handle('docked:windows', async () => {
+  await helperReady;
+  if (linuxWindows) return linuxWindows(win.getNativeWindowHandle().readUInt32LE(0));
+  return IS_WIN ? helperRequest('list', 'windows', 5000) : null;
+});
+
 function helperSend(line) {
   helper?.stdin.write(`${line}\n`);
 }
@@ -481,6 +514,8 @@ function onHelperLine(line) {
     answerHelper(`embed ${hwnd}`, JSON.parse(Buffer.from(rest[0], 'base64').toString('utf8')));
   } else if (kind === 'error') {
     answerHelper(`embed ${hwnd}`, null);
+  } else if (kind === 'windows') {
+    answerHelper('windows', JSON.parse(Buffer.from(rest[0], 'base64').toString('utf8')));
   } else if (kind === 'launch') {
     answerHelper(`launch ${hwnd}`, rest[0] === '0' ? null : rest[0]);
   } else if (kind === 'close-app') {
@@ -521,6 +556,7 @@ function stopMirror(hwnd) {
 const mirrorSend = (hwnd, line) => mirrors.get(hwnd)?.stdin.write(`${line}\n`);
 
 ipcMain.handle('docked:embed', async (_e, hwnd) => {
+  await helperReady;
   // Reading an app's command line (to reopen it next time) can take a moment.
   const res = await helperRequest(`embed ${hwnd}`, `embed ${hwnd}`, 10000);
   // App windows show themselves; only consoles are mirrored.
@@ -541,8 +577,9 @@ ipcMain.on('app:focus', (_e, hwnd) => helperSend(`focus ${hwnd}`));
 ipcMain.handle('app:close', (_e, hwnd) => helperRequest(`close-app ${hwnd}`, `close-app ${hwnd}`, 0));
 // Starts a saved app again; resolves with its window, or null.
 let nextLaunch = 1;
-ipcMain.handle('app:launch', (_e, { exe, args }) => {
+ipcMain.handle('app:launch', async (_e, { exe, args }) => {
   if (!exe) return null;
+  await helperReady;
   const id = nextLaunch++;
   const spec = Buffer.from(JSON.stringify({ exe, args: args || '' })).toString('base64');
   return helperRequest(`launch ${id} ${spec}`, `launch ${id}`, 20000);
@@ -987,8 +1024,9 @@ app.whenReady().then(() => {
   setUpSessionTracking();
   if (!IS_WIN) setUpShells();
   createWindow();
-  // Docking outside console windows is Windows-only (see native/winhelper.cs).
+  // Docking outside windows: native/winhelper.cs on Windows, linuxdock.js on Linux.
   if (IS_WIN) startHelper();
+  else startLinuxDock();
 });
 
 app.on('window-all-closed', () => {

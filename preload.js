@@ -96,6 +96,8 @@ contextBridge.exposeInMainWorld('deck', {
     ipcRenderer.on('xdrag', (_e, phase, hwnd, x, y, over) => fn(phase, hwnd, x, y, over));
   },
   dockWindow: (hwnd) => ipcRenderer.invoke('docked:embed', hwnd),
+  // Linux: the windows that could be docked ({ id, title }), or null if docking isn't available.
+  dockableWindows: () => ipcRenderer.invoke('docked:windows'),
   onWindowData: (hwnd, fn) => {
     dockedHandlers.set(hwnd, fn);
     if (dockedPending.has(hwnd)) {

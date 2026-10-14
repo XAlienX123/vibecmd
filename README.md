@@ -13,7 +13,7 @@ A tiling workspace for [Claude Code](https://claude.com/claude-code) and termina
 - Saved layouts, a right-click wheel, themes, and pop-out into a normal terminal window.
 - Editor panes: a built-in text editor (the one VS Code is made of) with tabs for open files, syntax colours, find and replace. It works the same on Windows and Linux. Files Claude edits reload by themselves, with the changed lines lit up.
 - Browser panes: a web page in a pane, with an address bar. Sign-ins are kept between launches.
-- Windows only: drag an open CMD window onto VibeCMD to dock it into a pane. Other app windows dock the same way and work as usual inside their pane.
+- Docking: on Windows, drag an open CMD window onto VibeCMD to dock it into a pane. Other app windows dock the same way and work as usual inside their pane. On Linux (X11, needs `xdotool` and `xprop`), right-click and choose **Dock a window…** to dock an app window.
 
 Press **Help** in the app for the full list of controls.
 

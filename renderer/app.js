@@ -116,6 +116,24 @@ function insertAt(id, targetId, side) {
 
   if (!tree) { tree = fresh; return; }
 
+  // The middle of a pane: the new pane takes its place and the old one closes
+  // (or goes to the tray if it asks to stay, e.g. an unsaved file).
+  if (side === 'center') {
+    const old = findLeaf(tree, targetId);
+    if (old) {
+      const oldId = old.node.id;
+      old.node.id = id;
+      closeSession(oldId).then(() => {
+        if (!sessions.has(oldId)) return;
+        parked.push(oldId);
+        render();
+      });
+      return;
+    }
+    insertAt(id, targetId, 'right');
+    return;
+  }
+
   if (targetId == null) {
     tree = normalize(split(dir, before ? [fresh, tree] : [tree, fresh]));
     return;
@@ -222,6 +240,13 @@ function buildPaneEl(s) {
     endDrag();
     // Dragging a pane out of VibeCMD pops it out as a normal window.
     if (await deck.cursorOutside()) popOut(s);
+  });
+  // Middle-click on the title bar closes the pane.
+  head.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
+  head.addEventListener('auxclick', (e) => {
+    if (e.button !== 1 || e.target.closest('.btns')) return;
+    e.preventDefault();
+    closeSession(s.id);
   });
   head.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -508,6 +533,26 @@ async function dockWindow(hwnd, targetId, side, tab) {
   if ([...sessions.values()].some((s) => s.hwnd === hwnd)) return;
   const res = await deck.dockWindow(hwnd);
   if (!res) return;
+  // Notepad and Notepad++ become a built-in editor pane on their files. The
+  // window is asked to close, so it can offer to save; Cancel keeps it docked.
+  const files = res.app ? plainEditorFiles(res) : [];
+  if (files.length) {
+    if (!await deck.closeApp(hwnd)) {
+      deck.releaseWindow(hwnd);
+      return;
+    }
+    if (tab === 'new') newTab();
+    else if (tab && tab !== activeTab && tabs.includes(tab)) { stashTab(); loadTab(tab); }
+    if (tab) { targetId = leafIds(tree).at(-1) ?? null; side = 'right'; }
+    const e = createSession({ kind: 'editor', cwd: files[0].replace(/[\\/][^\\/]*$/, ''), files, file: files[0] });
+    activeTab.fresh = false;
+    if (side && (targetId == null || findLeaf(tree, targetId))) insertAt(e.id, targetId, side);
+    else autoPlace(e.id, focusedId);
+    focusedId = e.id;
+    zoomedId = null;
+    render();
+    return;
+  }
   if (tab === 'new') {
     newTab();
   } else if (tab && tab !== activeTab && tabs.includes(tab)) {
@@ -524,6 +569,17 @@ async function dockWindow(hwnd, targetId, side, tab) {
   focusedId = s.id;
   zoomedId = null;
   render();
+}
+
+// The files a docked Notepad / Notepad++ has open: its command line's paths,
+// else the path Notepad++ puts at the start of its title.
+function plainEditorFiles({ exe, args, title }) {
+  if (!/^notepad(\+\+)?(\.exe)?$/i.test(exe.split(/[\\/]/).pop())) return [];
+  const isPath = (p) => /^([a-z]:[\\/]|\\\\)/i.test(p);
+  const files = [...(args || '').matchAll(/"([^"]+)"|(\S+)/g)].map((m) => m[1] || m[2]).filter(isPath);
+  const fromTitle = /^[*●]?\s*(.+?) - Notepad\+\+/i.exec(title || '')?.[1];
+  if (!files.length && fromTitle && isPath(fromTitle)) files.push(fromTitle);
+  return files;
 }
 
 const dockedPane = (hwnd) => [...sessions.values()].find((s) => s.hwnd === hwnd);
@@ -637,7 +693,7 @@ async function launchApp(s) {
     return;
   }
   if (!res) {
-    appNote(s, IS_WIN ? `Couldn't start ${name}. Click to try again.` : `${name} can only be docked on Windows.`);
+    appNote(s, IS_WIN ? `Couldn't start ${name}. Click to try again.` : `Couldn't start and dock ${name}. Click to try again (docking needs xdotool and xprop).`);
     return;
   }
   appNote(s, '');
@@ -868,7 +924,8 @@ function dropTargetAt(x, y) {
   }
   const overlay = el?.closest('.drop-overlay');
   if (overlay) {
-    return { overlay, paneId: +overlay.dataset.paneId, side: zoneFor({ clientX: x, clientY: y }, overlay, false) };
+    // A window dropped in the middle of a pane replaces it (see insertAt).
+    return { overlay, paneId: +overlay.dataset.paneId, side: zoneFor({ clientX: x, clientY: y }, overlay, true) };
   }
   const empty = el?.closest('.empty') || document.querySelector('#layout > .empty');
   if (empty) return { empty, paneId: null, side: 'right' };
@@ -1046,10 +1103,17 @@ async function closeSession(id, force = false) {
   if (s.kind === 'app' && !await closeApp(s)) return;
   if (s.kind === 'editor' && !await closeEditorPane(s)) return;
   if (!sessions.has(id)) return;
-  if (s.ptyId != null) deck.kill(s.ptyId);
-  if (s.hwnd) deck.closeWindow(s.hwnd);
-  if (s.kind === 'browser') closeBrowserPane(s);
-  s.term.dispose();
+  // The pane must leave the layout even if cleaning up after it throws,
+  // or the others never take its space.
+  try {
+    if (s.ptyId != null) deck.kill(s.ptyId);
+    if (s.hwnd) deck.closeWindow(s.hwnd);
+    appPlaced.delete(s.hwnd);
+    if (s.kind === 'browser') closeBrowserPane(s);
+    s.term.dispose();
+  } catch (err) {
+    console.error('closing pane', err);
+  }
   sessions.delete(id);
   removeFromTree(id);
   parked = parked.filter((p) => p !== id);
@@ -1310,6 +1374,12 @@ function render() {
     const f = sessions.get(focusedId);
     if (f && f.kind !== 'app') focusPane(f);
   });
+  // Layout is settled by now; fit again in case a pane's size changed after
+  // the first pass (a closed pane's neighbours growing, say).
+  setTimeout(() => {
+    for (const s of sessions.values()) if (s.el.isConnected && s.opened) fitSession(s);
+    syncApps();
+  }, 120);
 }
 
 function build(node) {
@@ -1609,7 +1679,7 @@ const closePopup = () => popup?.();
 function showPreview(ctx) {
   if (!ctx) return null;
   const overlay = ctx.s.el.querySelector('.drop-overlay');
-  const side = zoneFor({ clientX: ctx.x, clientY: ctx.y }, ctx.s.el, false);
+  const side = zoneFor({ clientX: ctx.x, clientY: ctx.y }, ctx.s.el, true);
   return { overlay, side };
 }
 
@@ -1724,8 +1794,29 @@ function openPaneMenu(ctx, x, y) {
       items.push({ label: `Send to ${target.label}`, kind: 'claude', run: () => sendToClaude(ctx.s, target.s) });
     }
   }
+  // Any open window can be docked: dragged in (Windows) or picked from a list.
+  const side = preview?.side ?? 'right';
+  items.push({ sep: true }, { label: 'Dock a window…', run: () => pickWindowToDock(x, y, ctx?.s.id ?? null, side) });
   if (ctx) items.push({ sep: true }, { label: ACTIONS.close.label, run: () => runAction('close', ctx, preview) });
   showMenu(x, y, items, preview);
+}
+
+// Linux: a list of the open windows to dock (see linuxdock.js).
+async function pickWindowToDock(x, y, targetId, side) {
+  const list = await deck.dockableWindows();
+  const docked = new Set([...sessions.values()].map((s) => s.hwnd).filter(Boolean));
+  const items = (list || []).filter((w) => !docked.has(w.id)).map((w) => ({
+    label: w.title.length > 60 ? `${w.title.slice(0, 59)}…` : w.title,
+    kind: 'app',
+    run: () => dockWindow(w.id, targetId, side),
+  }));
+  if (!items.length) {
+    items.push({
+      label: list ? 'No other windows to dock' : 'Docking needs X11 (or XWayland) with xdotool and xprop installed',
+      run: () => {},
+    });
+  }
+  showMenu(x, y, items);
 }
 
 function openHeaderMenu(s, x, y) {
