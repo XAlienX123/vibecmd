@@ -1801,7 +1801,7 @@ function openPaneMenu(ctx, x, y) {
   showMenu(x, y, items, preview);
 }
 
-// Linux: a list of the open windows to dock (see linuxdock.js).
+// Linux: a list of the open windows to dock (see linuxdock.js and kwindock.js).
 async function pickWindowToDock(x, y, targetId, side) {
   const list = await deck.dockableWindows();
   const docked = new Set([...sessions.values()].map((s) => s.hwnd).filter(Boolean));
@@ -1812,7 +1812,7 @@ async function pickWindowToDock(x, y, targetId, side) {
   }));
   if (!items.length) {
     items.push({
-      label: list ? 'No other windows to dock' : 'Docking needs X11 (or XWayland) with xdotool and xprop installed',
+      label: list ? 'No other windows to dock' : 'Docking needs KDE Plasma 6, or X11 with xdotool and xprop installed',
       run: () => {},
     });
   }

@@ -11,8 +11,9 @@
  * and is moved and sized to lie over its pane. It follows VibeCMD when that
  * moves. Needs xdotool and xprop; wmctrl is used to close windows politely if
  * it's there. Windows of native Wayland apps can't be moved by anyone but the
- * compositor, so those can't be docked. Dragging a window in (holding Shift) is
- * watched by native/linuxdrag.py.
+ * compositor, so under Wayland this is only used when VibeCMD itself runs on
+ * XWayland; on KDE Plasma under Wayland, kwindock.js docks through KWin
+ * instead. Dragging a window in (holding Shift) is watched by native/linuxdrag.py.
  */
 
 const { execFile, execFileSync, spawn } = require('child_process');
@@ -286,4 +287,4 @@ function createLinuxDock({ emit, origin, self }) {
   return { command, reposition, dispose, has: (id) => docked.has(id) };
 }
 
-module.exports = { createLinuxDock, listWindows, available };
+module.exports = { createLinuxDock, listWindows, available, quote, splitArgs };

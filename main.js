@@ -449,7 +449,9 @@ function startHelper() {
   });
 }
 
-// Linux: needs X11 (or XWayland) and xdotool; without them docking isn't offered.
+// Linux: on X11 (or with VibeCMD on XWayland) needs xdotool and xprop; under
+// Wayland needs KDE Plasma 6, whose KWin does the moving. Without them docking
+// isn't offered.
 let linuxDock = null;
 let linuxWindows = null;
 
@@ -457,19 +459,32 @@ let linuxWindows = null;
 // restart with the window don't ask too early.
 let helperReady = Promise.resolve();
 
+// Electron runs as a native Wayland app under Wayland, unless told to use X11.
+function onWayland() {
+  const forced = app.commandLine.getSwitchValue('ozone-platform') || app.commandLine.getSwitchValue('ozone-platform-hint')
+    || process.env.ELECTRON_OZONE_PLATFORM_HINT;
+  return !!process.env.WAYLAND_DISPLAY && forced !== 'x11';
+}
+
 function startLinuxDock() {
   if (process.platform !== 'linux') return;
   helperReady = (async () => {
-    const dock = require('./linuxdock');
-    if (!await dock.available()) return;
-    linuxWindows = dock.listWindows;
-    const self = win.getNativeWindowHandle().readUInt32LE(0);
-    const origin = () => {
-      const c = win.getContentBounds();
-      const sf = screen.getDisplayMatching(win.getBounds()).scaleFactor;
-      return { x: c.x * sf, y: c.y * sf, w: c.width * sf, h: c.height * sf };
-    };
-    linuxDock = dock.createLinuxDock({ emit: onHelperLine, origin, self });
+    if (onWayland()) {
+      linuxDock = await require('./kwindock').createKwinDock({ emit: onHelperLine, dir: app.getPath('userData') });
+      if (!linuxDock) return;
+      linuxWindows = linuxDock.list;
+    } else {
+      const dock = require('./linuxdock');
+      if (!await dock.available()) return;
+      const self = win.getNativeWindowHandle().readUInt32LE(0);
+      linuxWindows = () => dock.listWindows(self);
+      const origin = () => {
+        const c = win.getContentBounds();
+        const sf = screen.getDisplayMatching(win.getBounds()).scaleFactor;
+        return { x: c.x * sf, y: c.y * sf, w: c.width * sf, h: c.height * sf };
+      };
+      linuxDock = dock.createLinuxDock({ emit: onHelperLine, origin, self });
+    }
     helper = { stdin: { write: (line) => linuxDock.command(line.trim()) } };
     for (const ev of ['move', 'resize']) win.on(ev, () => linuxDock.reposition());
     app.on('will-quit', () => linuxDock?.dispose());
@@ -478,7 +493,7 @@ function startLinuxDock() {
 
 ipcMain.handle('docked:windows', async () => {
   await helperReady;
-  if (linuxWindows) return linuxWindows(win.getNativeWindowHandle().readUInt32LE(0));
+  if (linuxWindows) return linuxWindows();
   return IS_WIN ? helperRequest('list', 'windows', 5000) : null;
 });
 
@@ -566,7 +581,16 @@ ipcMain.handle('docked:embed', async (_e, hwnd) => {
 
 // Docked app windows (editors and the like) sit over their pane for real; the
 // renderer tells where (in its own pixels, turned into the window's here).
+// KWin works in logical pixels, from the top left of the window's client area;
+// if Electron draws its own title bar there, the page starts below it.
 ipcMain.on('app:place', (_e, hwnd, x, y, w, h) => {
+  if (linuxDock?.logical) {
+    const z = win.webContents.getZoomFactor();
+    const c = win.getContentBounds();
+    const b = win.getBounds();
+    helperSend(`place ${hwnd} ${Math.round(x * z + c.x - b.x)} ${Math.round(y * z + c.y - b.y)} ${Math.round(w * z)} ${Math.round(h * z)}`);
+    return;
+  }
   const s = win.webContents.getZoomFactor() * screen.getDisplayMatching(win.getBounds()).scaleFactor;
   const px = (v) => Math.round(v * s);
   helperSend(`place ${hwnd} ${px(x)} ${px(y)} ${px(w)} ${px(h)}`);
@@ -970,6 +994,7 @@ ipcMain.handle('dialog:pickFolder', async (_e, { defaultPath, title, buttonLabel
 });
 
 ipcMain.handle('app:cursorOutside', () => {
+  if (linuxDock?.cursorOutside) return linuxDock.cursorOutside();
   const p = screen.getCursorScreenPoint();
   const b = win.getBounds();
   return p.x < b.x || p.y < b.y || p.x >= b.x + b.width || p.y >= b.y + b.height;
