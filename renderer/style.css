@@ -1,0 +1,465 @@
+:root {
+  --bg: #16161e;
+  --panel: #1f2030;
+  --panel-hi: #2a2c42;
+  --border: #2f3149;
+  --text: #c8cbe0;
+  --muted: #7a7f9e;
+  --accent: #d97757;
+  --cmd: #7aa2f7;
+  --ps: #9ece6a;
+  --docked: #e0af68;
+  --danger: #8a2a2a;
+  --term-bg: #16161e;
+  --gap: 6px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px "Segoe UI", system-ui, sans-serif;
+  overflow: hidden;
+}
+
+body { display: flex; flex-direction: column; }
+
+button {
+  background: var(--panel-hi);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+
+/* ---------- tabs ---------- */
+#tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 6px 8px 0;
+  background: var(--bg);
+  flex: none;
+  overflow-x: auto;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 12px;
+  min-width: 110px;
+  max-width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+  background: var(--panel-hi);
+  color: var(--text);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.tab.drop-target, #new-tab.drop-target { outline: 1px dashed var(--accent); }
+.tab-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-name[contenteditable="true"] { outline: 1px solid var(--accent); cursor: text; text-overflow: clip; }
+.tab-count {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 0 5px;
+}
+.tab-count:empty { display: none; }
+.tab-close {
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 16px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.tab-close:hover { background: var(--danger); color: var(--text); }
+#new-tab {
+  padding: 2px 10px;
+  margin: 0 0 3px 4px;
+  font-size: 15px;
+  line-height: 18px;
+}
+
+/* ---------- toolbar ---------- */
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+  /* in a narrow window it scrolls sideways instead of wrapping button labels */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+#toolbar > * { flex: none; white-space: nowrap; }
+.brand { font-weight: 600; color: var(--accent); margin-right: 6px; }
+.group { display: flex; gap: 6px; }
+#toolbar > .spacer { flex: 1; }
+button.new[data-kind^="claude"] { border-left: 3px solid var(--accent); }
+button.new[data-kind="cmd"] { border-left: 3px solid var(--cmd); }
+button.new[data-kind="powershell"] { border-left: 3px solid var(--ps); }
+#theme {
+  background: var(--panel-hi);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 6px;
+  font: inherit;
+  cursor: pointer;
+}
+#theme:hover { border-color: var(--accent); }
+#toolbar > #cwd {
+  flex: 0 1 auto;
+  min-width: 60px;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+/* ---------- layout ---------- */
+#layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: var(--gap);
+  position: relative;
+}
+
+.split { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.split.row { flex-direction: row; }
+.split.col { flex-direction: column; }
+.split > .cell { display: flex; min-width: 0; min-height: 0; }
+
+.gutter { flex: none; background: transparent; }
+.split.row > .gutter { width: var(--gap); cursor: col-resize; }
+.split.col > .gutter { height: var(--gap); cursor: row-resize; }
+.gutter:hover, .gutter.dragging { background: var(--accent); opacity: .6; }
+
+.empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 15px;
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+}
+.empty.drop-target { border-color: var(--accent); color: var(--text); }
+
+/* ---------- pane ---------- */
+.pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  min-height: 80px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+  position: relative;
+}
+.pane.focused { border-color: var(--accent); }
+.pane.exited .term { opacity: .55; }
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 8px;
+  background: var(--panel-hi);
+  cursor: grab;
+  user-select: none;
+  flex: none;
+}
+.pane-head:active { cursor: grabbing; }
+.pane-head .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.pane[data-kind^="claude"] .dot { background: var(--accent); }
+.pane[data-kind="cmd"] .dot { background: var(--cmd); }
+.pane[data-kind="powershell"] .dot { background: var(--ps); }
+.pane-head .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+.pane-head .title[contenteditable="true"] { outline: 1px solid var(--accent); cursor: text; padding: 0 3px; }
+.pane-head .path {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  direction: rtl;
+  text-align: left;
+}
+.pane-head .status {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+/* the buttons never shrink; title, status and path give way with … instead */
+.pane-head .btns { display: flex; gap: 2px; flex: none; margin-left: auto; }
+.pane-head .btns button {
+  padding: 0 6px;
+  font-size: 12px;
+  line-height: 18px;
+  background: transparent;
+  border-color: transparent;
+}
+.pane-head .btns button:hover { background: var(--panel); border-color: var(--border); }
+.pane-head .btns button.close:hover { background: var(--danger); }
+
+/* The padding sits on .xterm, not .term: the fit addon subtracts the terminal's
+   own padding but measures its parent's full box, so padding there would make
+   it pick one column/row too many and clip the edge. */
+.term { flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: var(--term-bg); }
+.term .xterm { height: 100%; padding: 4px 0 0 6px; }
+.pane.docked .dot { background: var(--docked); }
+.pane-head .btns .undock { display: none; }
+.pane.docked .pane-head .btns .undock { display: inline-block; }
+/* something is running in the pane, so closing it would ask first */
+.pane.busy .pane-head .dot { animation: busy 1.1s ease-in-out infinite; }
+@keyframes busy { 50% { opacity: .25; } }
+
+/* drop zones shown while dragging */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  z-index: 10;
+}
+body.dragging .drop-overlay { display: block; }
+.drop-overlay.preview { display: block; pointer-events: none; }
+.drop-hint {
+  position: absolute;
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  border: 2px solid var(--accent);
+  border-radius: 6px;
+  pointer-events: none;
+  display: none;
+  transition: all 60ms;
+}
+
+/* maximized pane */
+#layout.zoomed .pane:not(.zoom) { visibility: hidden; }
+.pane.zoom {
+  position: absolute;
+  inset: var(--gap);
+  z-index: 20;
+}
+
+/* ---------- tray ---------- */
+#tray {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  min-height: 32px;
+  flex: none;
+}
+#tray.drop-target { background: var(--panel-hi); outline: 1px dashed var(--accent); }
+.tray-label { color: var(--muted); }
+#tray-items { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: var(--panel-hi);
+  border: 1px solid var(--border);
+  cursor: grab;
+}
+.chip .dot { width: 7px; height: 7px; border-radius: 50%; }
+.chip[data-kind^="claude"] .dot { background: var(--accent); }
+.chip[data-kind="cmd"] .dot { background: var(--cmd); }
+.chip[data-kind="powershell"] .dot { background: var(--ps); }
+.chip:hover { border-color: var(--accent); }
+
+/* ---------- "open what here?" menu for Explorer drops ---------- */
+.kind-menu {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+  min-width: 220px;
+}
+.kind-menu button { text-align: left; }
+.kind-menu-path {
+  color: var(--muted);
+  font-size: 11px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  padding: 0 2px 3px;
+}
+
+/* ---------- help ---------- */
+#help {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+#help[hidden] { display: none; }
+.help-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px 26px;
+  max-width: 560px;
+  line-height: 1.6;
+}
+.help-card h2 { margin-top: 0; color: var(--accent); }
+.help-card ul { padding-left: 18px; }
+.help-card .keys { list-style: none; padding: 0; }
+kbd {
+  background: var(--panel-hi);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  font: 12px Consolas, monospace;
+}
+
+/* ---------- no scrollbars in terminals (wheel / keys still scroll) ---------- */
+.xterm .xterm-viewport { scrollbar-width: none; }
+.xterm .xterm-viewport::-webkit-scrollbar { display: none; }
+.xterm .xterm-scrollable-element > .scrollbar { display: none !important; }
+
+/* ---------- hold-right-click wheel ---------- */
+.wheel {
+  position: fixed;
+  z-index: 300;
+  width: 208px;
+  height: 208px;
+  margin: -104px 0 0 -104px;
+  border-radius: 50%;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--accent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+}
+.wheel::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.wheel span {
+  position: absolute;
+  padding: 4px 12px;
+  border-radius: 12px;
+  background: var(--panel-hi);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+}
+.wheel span[data-kind^="claude"] { border-left: 3px solid var(--accent); }
+.wheel span[data-kind="cmd"] { border-left: 3px solid var(--cmd); }
+.wheel span[data-kind="powershell"] { border-left: 3px solid var(--ps); }
+.wheel span.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+
+/* ---------- pane colour ---------- */
+.pane.colored .dot { background: var(--pc); }
+.pane.colored .pane-head { background: color-mix(in srgb, var(--pc) 16%, var(--panel-hi)); box-shadow: inset 0 2px 0 var(--pc); }
+.pane.colored.focused { border-color: var(--pc); }
+
+/* ---------- menus, dialogs, layout editor ---------- */
+.kind-menu hr { width: 100%; border: 0; border-top: 1px solid var(--border); margin: 2px 0; }
+.swatches { display: flex; flex-wrap: wrap; gap: 5px; padding: 2px; }
+.swatch { width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 2px solid transparent; }
+.swatch.on { border-color: var(--text); }
+.swatch.none { background: var(--panel-hi); }
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: rgba(0, 0, 0, .55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal .help-card { max-height: 90vh; overflow: auto; scrollbar-width: none; }
+.help-card .row { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin: 8px 0; }
+.help-card h3 { margin: 10px 0 6px; }
+.help-card .muted { color: var(--muted); }
+.help-card input, .help-card select {
+  background: var(--panel-hi);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 6px;
+  font: inherit;
+}
+.help-card.ask { min-width: 320px; }
+.help-card.ask input { width: 100%; }
+button.danger:hover { background: var(--danger); }
+button.ok { border-color: var(--accent); }
+.layout-row { display: flex; gap: 6px; margin: 4px 0; }
+.layout-row .layout-name { flex: 1; text-align: left; }
+.wheel-cfg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 12px; }
+.help-card.settings { min-width: 440px; }
+.help-card.editor { width: min(900px, 92vw); max-width: none; }
+.help-card.editor .ed-name { flex: 1; }
+.ed-area { height: 380px; display: flex; border: 1px solid var(--border); border-radius: 8px; padding: 4px; }
+.ed-split { display: flex; flex: 1; gap: 4px; min-width: 0; min-height: 0; }
+.ed-split.row { flex-direction: row; }
+.ed-split.col { flex-direction: column; }
+.ed-cell { display: flex; min-width: 0; min-height: 0; }
+.ed-leaf {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--panel-hi);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--pc, var(--accent));
+  border-radius: 6px;
+}
+.ed-leaf .ed-dir { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
+.ed-acts { display: flex; gap: 4px; margin-top: auto; }

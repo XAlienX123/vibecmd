@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>VibeCMD</title>
+  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <nav id="tabs"></nav>
+  <header id="toolbar">
+    <span class="brand">VibeCMD</span>
+    <button id="cwd" title="Folder new sessions start in (click to change)"></button>
+    <div class="spacer"></div>
+    <select id="theme" title="Colour theme"></select>
+    <button id="even" title="Make all panes equal size">Even out</button>
+    <button id="help-btn" title="Shortcuts">?</button>
+  </header>
+
+  <main id="layout"></main>
+
+  <footer id="tray" title="Parked sessions keep running. Drag one onto a pane to bring it back.">
+    <span class="tray-label">Parked:</span>
+    <div id="tray-items"></div>
+  </footer>
+
+  <div id="help" hidden>
+    <div class="help-card">
+      <h2>VibeCMD</h2>
+      <ul>
+        <li><b>Move a pane:</b> drag its title bar onto another pane. Drop on an edge to put it there, in the middle to swap.</li>
+        <li><b>New session:</b> right-click a pane. It previews where the new pane goes (nearest edge); pick Claude / Duplicate / CMD / PowerShell, or click elsewhere to cancel. <b>Hold</b> right-click for a wheel: move towards a slot and release (up Claude, right CMD, down PowerShell, left Duplicate, corners Park / Maximize / Close / Pop out). Edit the slots in Layout settings.</li>
+        <li><b>Right-click a pane's title bar</b> to rename or recolour it.</li>
+        <li><b>Automatic names:</b> panes name themselves after what they're doing: a Claude pane after its chat's topic, a shell pane after the command running in it (or its folder while idle). Renaming a pane yourself stops this for that pane.</li>
+        <li><b>Layouts:</b> right-click a tab, "Save layout…". Right-click the bar above the panes to open a saved layout or go to Layout settings (rename, delete, or click one to edit its panes).</li>
+        <li><b>Pop out:</b> drag a pane's title bar outside VibeCMD to turn it into a normal console window (Claude resumes its chat). Drag that window back in to dock it again.</li>
+        <li><b>Resize:</b> drag the gaps between panes.</li>
+        <li><b>Park</b> (▁) hides a pane but keeps it running. Drag it back from the bottom tray.</li>
+        <li><b>Rename:</b> double-click a title.</li>
+        <li><b>+C</b> / <b>&gt;_</b> on a pane: new Claude / CMD right next to it, in the same folder.</li>
+        <li><b>New Claude</b> asks which folder to open in, starting at the last one you picked.</li>
+        <li><b>📁</b> in the toolbar is that last folder.</li>
+        <li><b>Drag an open CMD window onto VibeCMD</b> (Windows only) (by its title bar) to dock it into a pane, or drop it on a tab (or <b>+</b> for a new tab) to dock it there. Whatever runs in it, even a Claude chat, keeps running untouched; the window itself is hidden (and leaves the taskbar) while the pane shows it. ⇱, or dragging its title bar out of VibeCMD, gives it back as a normal window; ✕ or quitting VibeCMD closes it for good. Docked windows aren't reopened after a restart.</li>
+        <li><b>Drag a folder or file from your file manager</b> onto a pane edge to open CMD / Claude / PowerShell in that folder.</li>
+        <li><b>Ctrl+scroll</b> over a terminal changes its text size.</li>
+        <li><b>Tabs</b> (top): <b>+</b> opens a new tab, double-click to rename, drag to reorder, middle-click to close. Drop a pane on a tab to move it there.</li>
+        <li><b>Everything is saved automatically.</b> Next launch reopens every tab and pane in the same layout and folders, and each Claude pane continues its own chat.</li>
+        <li>A <b>pulsing dot</b> means something is running in that pane (Claude working, or a command that hasn't finished). Only then does closing the pane, its tab or VibeCMD ask first.</li>
+      </ul>
+      <h3>Shortcuts</h3>
+      <ul class="keys">
+        <li><kbd>Ctrl+Shift+N</kbd> new Claude</li>
+        <li><kbd>Ctrl+Shift+D</kbd> new CMD</li>
+        <li><kbd>Ctrl+Shift+T</kbd> new tab</li>
+        <li><kbd>Ctrl+Tab</kbd> / <kbd>Ctrl+Shift+Tab</kbd> (or <kbd>Ctrl+PgUp/PgDn</kbd>) switch tabs, from anywhere, even inside Claude</li>
+        <li><kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> switch tabs when no pane has focus (e.g. an empty tab); inside a pane they go to the shell / Claude as usual</li>
+        <li><kbd>Ctrl+Shift+W</kbd> close focused pane</li>
+        <li><kbd>Ctrl+Shift+Enter</kbd> maximize / restore focused pane</li>
+        <li><kbd>Alt+Shift+Arrows</kbd> move focus between panes</li>
+        <li><kbd>Alt+K</kbd> / <kbd>Alt+Shift+K</kbd> next / previous pane in this tab (not Ctrl+K: Claude Code uses it to delete to end of line)</li>
+        <li><kbd>Shift+Arrows</kbd> / <kbd>Ctrl+Shift+Arrows</kbd> / <kbd>Shift+Home/End</kbd> / <kbd>Ctrl+A</kbd> select in Claude's prompt (type, paste or Backspace to replace it, <kbd>Ctrl+C</kbd> / <kbd>Ctrl+X</kbd> to copy / cut); after a click in the output, they select there instead</li>
+        <li><kbd>Ctrl+C</kbd> copies when text is selected, otherwise interrupts</li>
+        <li><kbd>Ctrl+V</kbd> paste (Copy / Paste are also in the right-click menu)</li>
+      </ul>
+      <button id="help-close">Close</button>
+    </div>
+  </div>
+
+  <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
+  <script src="themes.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

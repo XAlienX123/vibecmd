@@ -1,0 +1,86 @@
+{
+  "name": "vibecmd",
+  "version": "1.0.0",
+  "description": "Tiling workspace for Claude Code and terminal sessions (Windows and Linux)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "install-shortcut": "electron scripts/install.js",
+    "dist": "electron-builder",
+    "dist:linux": "electron-builder --linux",
+    "dist:win": "electron-builder --win"
+  },
+  "keywords": [],
+  "author": "XAlienX123",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/xterm": "^6.0.0",
+    "node-pty": "^1.1.0"
+  },
+  "allowScripts": {
+    "electron@44.7.0": true,
+    "node-pty@1.1.0": true,
+    "electron-winstaller@5.4.0": false
+  },
+  "productName": "VibeCMD",
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/XAlienX123/vibecmd.git"
+  },
+  "build": {
+    "appId": "com.xalienx123.vibecmd",
+    "productName": "VibeCMD",
+    "directories": {
+      "buildResources": "build-resources",
+      "output": "dist"
+    },
+    "asar": false,
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "scripts/session-hook.js",
+      "native/**",
+      "build/icon.*",
+      "package.json",
+      "node_modules/**"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "pacman",
+        "deb",
+        "tar.gz"
+      ],
+      "category": "Development",
+      "icon": "build/icon.png",
+      "executableName": "vibecmd",
+      "maintainer": "XAlienX123 <XAlienX123@users.noreply.github.com>",
+      "synopsis": "Tiling workspace for Claude Code and terminal sessions"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    },
+    "npmRebuild": false
+  }
+}
