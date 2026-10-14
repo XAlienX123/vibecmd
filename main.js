@@ -166,7 +166,10 @@ function createWindow() {
 
   let confirmed = false;
   let released = false;
+  let appsClosed = false;
+  let closingApps = false;
   win.on('close', (e) => {
+    if (closingApps) { e.preventDefault(); return; }
     // Idle sessions just reopen next time, so only ask when something is still
     // running: Claude mid-task, or a command that hasn't returned to the prompt.
     const busy = [...ptys.values()].filter(isBusy).length + dockedBusy.size;
@@ -182,6 +185,26 @@ function createWindow() {
       });
       if (choice === 1) { e.preventDefault(); return; }
       confirmed = true;
+    }
+    // Docked apps (editors) are asked to close next, one by one, so each can
+    // offer to save. Cancel in any of them and VibeCMD stays open as it was:
+    // apps that did close are started again in their panes (see app:quitting).
+    if (helper && !appsClosed) {
+      e.preventDefault();
+      closingApps = true;
+      win.webContents.send('app:quitting', true);
+      helperRequest('close-apps', 'close-apps', 0).then((ok) => {
+        closingApps = false;
+        if (!win) return;
+        if (!ok) {
+          confirmed = false;
+          win.webContents.send('app:quitting', false);
+          return;
+        }
+        appsClosed = true;
+        win.close();
+      });
+      return;
     }
     try {
       fs.writeFileSync(boundsFile(), JSON.stringify({ ...win.getNormalBounds(), maximized: win.isMaximized() }));
@@ -253,8 +276,10 @@ function setUpSessionTracking() {
   // VibeCMD's own Electron in node mode instead.
   const command = IS_WIN ? `node "${hook}"` : `ELECTRON_RUN_AS_NODE=1 "${process.execPath}" "${hook}"`;
   const entry = [{ hooks: [{ type: 'command', command, timeout: 10 }] }];
+  // Files Claude edits, for panes linked to an editor (see "linked editors" in app.js).
+  const edits = [{ matcher: 'Edit|Write|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command, timeout: 10 }] }];
   fs.writeFileSync(hookSettingsFile(), JSON.stringify({
-    hooks: { SessionStart: entry, UserPromptSubmit: entry, Stop: entry },
+    hooks: { SessionStart: entry, UserPromptSubmit: entry, Stop: entry, PostToolUse: edits },
   }, null, 2));
 
   fs.watch(sessionsDir(), (_event, file) => {
@@ -262,10 +287,15 @@ function setUpSessionTracking() {
     const proc = m && ptys.get(+m[1]);
     if (!proc) return;
     try {
-      const { sessionId, busy } = JSON.parse(fs.readFileSync(path.join(sessionsDir(), file), 'utf8'));
+      const { sessionId, busy, edited, at } = JSON.parse(fs.readFileSync(path.join(sessionsDir(), file), 'utf8'));
       if (!UUID.test(sessionId)) return;
       proc.claudeId = sessionId;
       win?.webContents.send('pty:claudeSession', +m[1], sessionId);
+      // The watcher fires more than once per write; report each edit once.
+      if (edited && at !== proc.editedAt) {
+        proc.editedAt = at;
+        win?.webContents.send('pty:edited', +m[1], edited);
+      }
       setBusy(+m[1], proc, !!busy);
     } catch { /* mid-rename; the next event will have it */ }
   });
@@ -364,7 +394,7 @@ function buildHelper() {
   } catch { /* not built yet */ }
   const csc = path.join(process.env.WINDIR || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
   fs.mkdirSync(path.dirname(HELPER_EXE), { recursive: true });
-  const res = spawnSync(csc, ['-nologo', '-optimize', '-platform:x64', `-out:${HELPER_EXE}`, HELPER_SRC], { windowsHide: true, encoding: 'utf8' });
+  const res = spawnSync(csc, ['-nologo', '-optimize', '-platform:x64', '-r:System.Management.dll', `-out:${HELPER_EXE}`, HELPER_SRC], { windowsHide: true, encoding: 'utf8' });
   if (res.status !== 0) console.error('winhelper build failed:', res.stdout || res.error);
   return res.status === 0;
 }
@@ -382,20 +412,30 @@ function startHelper() {
       buf = buf.slice(nl + 1);
     }
   });
-  helper.on('exit', () => { helper = null; });
+  helper.on('exit', () => {
+    helper = null;
+    for (const done of helperWaiters.values()) done(null);
+    helperWaiters.clear();
+  });
 }
 
 function helperSend(line) {
   helper?.stdin.write(`${line}\n`);
 }
 
-function helperRequest(line, reply) {
+// `timeout` 0: wait as long as it takes (an app's save question can stay open).
+function helperRequest(line, reply, timeout = 3000) {
   return new Promise((resolve) => {
     if (!helper) { resolve(null); return; }
     helperWaiters.set(reply, resolve);
     helperSend(line);
-    setTimeout(() => { if (helperWaiters.delete(reply)) resolve(null); }, 3000);
+    if (timeout) setTimeout(() => { if (helperWaiters.delete(reply)) resolve(null); }, timeout);
   });
+}
+
+function answerHelper(reply, value) {
+  helperWaiters.get(reply)?.(value);
+  helperWaiters.delete(reply);
 }
 
 function onHelperLine(line) {
@@ -407,13 +447,19 @@ function onHelperLine(line) {
     const s = win.webContents.getZoomFactor();
     win.webContents.send('xdrag', kind === 'drag-end' ? 'end' : 'move', hwnd,
       (dip.x - content.x) / s, (dip.y - content.y) / s, over === 1);
-  } else if (kind === 'embedded' || kind === 'error') {
-    helperWaiters.get(`embed ${hwnd}`)?.(kind === 'embedded' ? { title: rest.join(' ') } : null);
-    helperWaiters.delete(`embed ${hwnd}`);
+  } else if (kind === 'embedded') {
+    answerHelper(`embed ${hwnd}`, JSON.parse(Buffer.from(rest[0], 'base64').toString('utf8')));
+  } else if (kind === 'error') {
+    answerHelper(`embed ${hwnd}`, null);
+  } else if (kind === 'launch') {
+    answerHelper(`launch ${hwnd}`, rest[0] === '0' ? null : rest[0]);
+  } else if (kind === 'close-app') {
+    answerHelper(`close-app ${hwnd}`, rest[0] === '1');
   } else if (kind === 'released-all' || kind === 'closed-all') {
-    helperWaiters.get(kind)?.(true);
-    helperWaiters.delete(kind);
-  } else if (kind === 'gone' || kind === 'title') {
+    answerHelper(kind, true);
+  } else if (kind === 'closed-apps' || kind === 'apps-kept') {
+    answerHelper('close-apps', kind === 'closed-apps');
+  } else if (kind === 'gone' || kind === 'title' || kind === 'focus' || kind === 'reveal') {
     win?.webContents.send(`docked:${kind}`, hwnd, rest.join(' '));
   }
 }
@@ -445,9 +491,31 @@ function stopMirror(hwnd) {
 const mirrorSend = (hwnd, line) => mirrors.get(hwnd)?.stdin.write(`${line}\n`);
 
 ipcMain.handle('docked:embed', async (_e, hwnd) => {
-  const res = await helperRequest(`embed ${hwnd}`, `embed ${hwnd}`);
-  if (res && !mirrors.has(hwnd)) startMirror(hwnd);
+  // Reading an app's command line (to reopen it next time) can take a moment.
+  const res = await helperRequest(`embed ${hwnd}`, `embed ${hwnd}`, 10000);
+  // App windows show themselves; only consoles are mirrored.
+  if (res && !res.app && !mirrors.has(hwnd)) startMirror(hwnd);
   return res;
+});
+
+// Docked app windows (editors and the like) sit over their pane for real; the
+// renderer tells where (in its own pixels, turned into the window's here).
+ipcMain.on('app:place', (_e, hwnd, x, y, w, h) => {
+  const s = win.webContents.getZoomFactor() * screen.getDisplayMatching(win.getBounds()).scaleFactor;
+  const px = (v) => Math.round(v * s);
+  helperSend(`place ${hwnd} ${px(x)} ${px(y)} ${px(w)} ${px(h)}`);
+});
+ipcMain.on('app:hide', (_e, hwnd) => helperSend(`hide ${hwnd}`));
+ipcMain.on('app:focus', (_e, hwnd) => helperSend(`focus ${hwnd}`));
+// Resolves false if the app stayed open (its save question was cancelled).
+ipcMain.handle('app:close', (_e, hwnd) => helperRequest(`close-app ${hwnd}`, `close-app ${hwnd}`, 0));
+// Starts a saved app again; resolves with its window, or null.
+let nextLaunch = 1;
+ipcMain.handle('app:launch', (_e, { exe, args }) => {
+  if (!exe) return null;
+  const id = nextLaunch++;
+  const spec = Buffer.from(JSON.stringify({ exe, args: args || '' })).toString('base64');
+  return helperRequest(`launch ${id} ${spec}`, `launch ${id}`, 20000);
 });
 ipcMain.on('docked:write', (_e, hwnd, data) => mirrorSend(hwnd, `w ${Buffer.from(data).toString('base64')}`));
 ipcMain.on('docked:resize', (_e, hwnd, cols, rows) => mirrorSend(hwnd, `r ${cols} ${rows}`));
@@ -629,6 +697,33 @@ ipcMain.on('state:save', (_e, json) => {
 
 // ---------------------------------------------------------------- misc
 
+ipcMain.handle('dialog:pickFile', async (_e, { defaultPath, title, buttonLabel, filters } = {}) => {
+  const res = await dialog.showOpenDialog(win, { properties: ['openFile'], defaultPath, title, buttonLabel, filters });
+  return res.canceled ? null : res.filePaths[0];
+});
+
+// Editors a file can be opened in, in a docked pane (Windows only, see
+// native/winhelper.cs). `flags` make each start a window of its own, rather
+// than hand the file to a copy that's already open (maybe in another pane).
+function editorCandidates() {
+  const pf = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean);
+  const local = process.env.LOCALAPPDATA || '';
+  return [
+    { name: 'Notepad++', paths: pf.map((d) => path.join(d, 'Notepad++', 'notepad++.exe')), flags: '-multiInst -nosession' },
+    { name: 'Kate', paths: pf.map((d) => path.join(d, 'Kate', 'bin', 'kate.exe')), flags: '-n' },
+    { name: 'VS Code', paths: [path.join(local, 'Programs', 'Microsoft VS Code', 'Code.exe'), ...pf.map((d) => path.join(d, 'Microsoft VS Code', 'Code.exe'))], flags: '--new-window' },
+    { name: 'Sublime Text', paths: pf.map((d) => path.join(d, 'Sublime Text', 'sublime_text.exe')), flags: '-n' },
+    { name: 'Notepad', paths: [path.join(process.env.WINDIR || 'C:\\Windows', 'notepad.exe')], flags: '' },
+  ];
+}
+
+ipcMain.handle('app:editors', () => {
+  if (!IS_WIN) return [];
+  return editorCandidates()
+    .map(({ name, paths, flags }) => ({ name, exe: paths.find((p) => fs.existsSync(p)), flags }))
+    .filter((e) => e.exe);
+});
+
 ipcMain.handle('dialog:pickFolder', async (_e, { defaultPath, title, buttonLabel } = {}) => {
   const res = await dialog.showOpenDialog(win, {
     properties: ['openDirectory'],
@@ -661,6 +756,30 @@ ipcMain.handle('clipboard:read', () => clipboard.readText());
 
 ipcMain.on('shell:openExternal', (_e, url) => {
   if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+});
+
+// Manual update check: compare the running version with the latest GitHub release.
+const REPO = 'XAlienX123/vibecmd';
+const versionParts = (v) => String(v).replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
+const isNewer = (a, b) => {
+  const x = versionParts(a), y = versionParts(b);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+};
+
+ipcMain.handle('app:checkUpdate', async () => {
+  const current = app.getVersion();
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'VibeCMD' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+    const rel = await res.json();
+    return { current, latest: rel.tag_name, url: rel.html_url, newer: isNewer(rel.tag_name, current) };
+  } catch (err) {
+    return { current, error: err.message };
+  }
 });
 
 app.whenReady().then(() => {

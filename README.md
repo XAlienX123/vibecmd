@@ -11,9 +11,9 @@ A tiling workspace for [Claude Code](https://claude.com/claude-code) and termina
   Rename a pane yourself to stop this.
 - A pulsing dot shows panes that are still working. VibeCMD asks before you close a pane that is busy.
 - Saved layouts, a right-click wheel, themes, and pop-out into a normal terminal window.
-- Windows only: drag an open CMD window onto VibeCMD to dock it into a pane.
+- Windows only: drag an open CMD window onto VibeCMD to dock it into a pane. App windows (Notepad, Notepad++, Kate...) dock the same way, work as usual inside their pane, reopen on the next launch, and get the chance to save when VibeCMD closes.
 
-Press **?** in the app for the full list of controls.
+Press **Help** in the app for the full list of controls.
 
 ## Requirements
 

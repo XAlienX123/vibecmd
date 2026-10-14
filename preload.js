@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('deck', {
   platform: process.platform,
   // Windows build number, so xterm can match how ConPTY redraws on resize.
   windowsBuild: +process.getSystemVersion().split('.')[2] || 0,
+  checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
   createPty: (opts) => ipcRenderer.invoke('pty:create', opts),
   write: (id, data) => ipcRenderer.send('pty:write', id, data),
   resize: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),
@@ -49,6 +50,10 @@ contextBridge.exposeInMainWorld('deck', {
   onClaudeSession: (fn) => {
     ipcRenderer.on('pty:claudeSession', (_e, ptyId, sessionId) => fn(ptyId, sessionId));
   },
+  // (ptyId, file) when Claude has edited or written a file.
+  onEdited: (fn) => {
+    ipcRenderer.on('pty:edited', (_e, ptyId, file) => fn(ptyId, file));
+  },
   // (ptyId, busy) when Claude starts or stops working on something.
   onBusy: (fn) => {
     ipcRenderer.on('pty:busy', (_e, ptyId, busy) => fn(ptyId, busy));
@@ -57,6 +62,9 @@ contextBridge.exposeInMainWorld('deck', {
   loadState: () => ipcRenderer.sendSync('state:load'),
   saveState: (json) => ipcRenderer.send('state:save', json),
   pickFolder: (opts) => ipcRenderer.invoke('dialog:pickFolder', opts),
+  pickFile: (opts) => ipcRenderer.invoke('dialog:pickFile', opts),
+  // Installed editors files can be opened in: [{ name, exe, flags }].
+  editors: () => ipcRenderer.invoke('app:editors'),
   popOut: (opts) => ipcRenderer.invoke('pane:popOut', opts),
   // True when the mouse is outside the VibeCMD window (a pane dragged out of it).
   cursorOutside: () => ipcRenderer.invoke('app:cursorOutside'),
@@ -90,8 +98,18 @@ contextBridge.exposeInMainWorld('deck', {
   setWindowBusy: (hwnd, busy) => ipcRenderer.send('docked:busy', hwnd, busy),
   onDockedGone: (fn) => { ipcRenderer.on('docked:gone', (_e, hwnd) => fn(hwnd)); },
   onDockedTitle: (fn) => { ipcRenderer.on('docked:title', (_e, hwnd, title) => fn(hwnd, title)); },
+  // Docked app windows (editors etc.), placed over their pane for real.
+  placeApp: (hwnd, x, y, w, h) => ipcRenderer.send('app:place', hwnd, x, y, w, h),
+  hideApp: (hwnd) => ipcRenderer.send('app:hide', hwnd),
+  focusApp: (hwnd) => ipcRenderer.send('app:focus', hwnd),
+  closeApp: (hwnd) => ipcRenderer.invoke('app:close', hwnd),
+  launchApp: (app) => ipcRenderer.invoke('app:launch', app),
+  onAppFocus: (fn) => { ipcRenderer.on('docked:focus', (_e, hwnd) => fn(hwnd)); },
+  onAppReveal: (fn) => { ipcRenderer.on('docked:reveal', (_e, hwnd) => fn(hwnd)); },
+  onQuitting: (fn) => { ipcRenderer.on('app:quitting', (_e, on) => fn(on)); },
   // For things dragged in from Explorer: the folder to open a session in.
   folderForFile: (file) => ipcRenderer.invoke('fs:folderFor', webUtils.getPathForFile(file)),
+  pathForFile: (file) => webUtils.getPathForFile(file),
   copy: (text) => ipcRenderer.send('clipboard:write', text),
   paste: () => ipcRenderer.invoke('clipboard:read'),
 });

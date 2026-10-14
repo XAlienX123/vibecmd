@@ -3,16 +3,28 @@
 // untouched; its window is just hidden, so it leaves the taskbar, and a pane
 // shows its screen instead.
 //
+// Any other app window (Notepad, Notepad++, Kate...) can be docked too. Those
+// aren't mirrored: the real window is made a child of VibeCMD's and placed
+// over its pane, so it works exactly as usual, menus and dialogs included.
+//
 // Two modes, both talking over stdin/stdout one line per message:
 //
-// winhelper <VibeCMD hwnd>: watches for console windows being dragged.
-//   out: drag-move <hwnd> <x> <y> <over>   while a console window is being dragged
+// winhelper <VibeCMD hwnd>: watches for windows being dragged.
+//   out: drag-move <hwnd> <x> <y> <over>   while a window is being dragged
 //        drag-end <hwnd> <x> <y> <over>    (screen pixels; over=1 if VibeCMD is under the cursor)
-//        embedded <hwnd> <title> | error <hwnd> <why> | released <hwnd> | released-all
+//        embedded <hwnd> <base64 json>     {title, app, exe, args}; app windows have exe/args
+//        error <hwnd> <why> | released <hwnd> | released-all
 //        closed <hwnd> | closed-all
 //        gone <hwnd>                       a docked window closed by itself
 //        title <hwnd> <title>              a docked window's title changed
+//        focus <hwnd>                      a docked app window got the keyboard
+//        launch <id> <hwnd>                a started app's window (0 if none showed up)
+//        close-app <hwnd> <1|0>            the app closed (1) or stayed open (0, e.g. Cancel)
+//        reveal <hwnd> | closed-apps | apps-kept   while closing every app on quit
 //   in:  embed <hwnd> | release <hwnd> | close <hwnd> | release-all | close-all
+//        place <hwnd> <x> <y> <w> <h>      show an app window there (VibeCMD client pixels)
+//        hide <hwnd> | focus <hwnd> | close-app <hwnd> | close-apps
+//        launch <id> <base64 json>         {exe, args}: start an app, report its window
 //   If VibeCMD goes away (stdin closes) every window is given back first.
 //
 // winhelper mirror <hwnd>: one per docked window. Attaches to its console and
@@ -37,6 +49,9 @@ static class WinHelper
         public IntPtr Hwnd;
         public RECT Rect;
         public string Title;
+        // An app window (not a console), with what it looked like before docking.
+        public bool App;
+        public long Style, ExStyle;
     }
 
     static IntPtr host;
@@ -60,6 +75,8 @@ static class WinHelper
         SetConsoleCtrlHandler(IntPtr.Zero, true);
         hookProc = OnWinEvent;
         SetWinEventHook(EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZEEND, IntPtr.Zero, hookProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+        focusProc = OnFocus;
+        SetWinEventHook(EVENT_OBJECT_FOCUS, EVENT_OBJECT_FOCUS, IntPtr.Zero, focusProc, 0, 0, WINEVENT_OUTOFCONTEXT);
         watchTimer = new Timer(_ => WatchEmbedded(), null, 700, 700);
 
         var reader = new Thread(() =>
@@ -94,7 +111,7 @@ static class WinHelper
 
     static void OnWinEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
-        if (idObject != 0 || ClassOf(hwnd) != ConsoleClass) return;
+        if (idObject != 0 || (ClassOf(hwnd) != ConsoleClass && !Dockable(hwnd))) return;
         if (ev == EVENT_SYSTEM_MOVESIZESTART)
         {
             dragging = hwnd;
@@ -178,6 +195,8 @@ static class WinHelper
         string[] a = line.Split(' ');
         if (a[0] == "release-all") { ReleaseAll(); Emit("released-all"); return; }
         if (a[0] == "close-all") { CloseAll(); Emit("closed-all"); return; }
+        if (a[0] == "close-apps") { Background(CloseApps); return; }
+        if (a[0] == "launch") { string id0 = a[1], spec = a[2]; Background(() => Launch(id0, spec)); return; }
         long id = long.Parse(a[1]);
         IntPtr h = new IntPtr(id);
         Embedded e;
@@ -186,9 +205,11 @@ static class WinHelper
         switch (a[0])
         {
             case "embed":
-                if (!IsWindow(h) || ClassOf(h) != ConsoleClass) { Emit("error " + id + " not a console window"); return; }
-                if (e == null) Embed(h);
-                Emit("embedded " + id + " " + TitleOf(h));
+                bool console = IsWindow(h) && ClassOf(h) == ConsoleClass;
+                if (!console && !Dockable(h)) { Emit("error " + id + " can't dock that window"); return; }
+                if (e == null && !(console ? Embed(h) : EmbedApp(h))) { Emit("error " + id + " can't dock that window"); return; }
+                lock (gate) embedded.TryGetValue(id, out e);
+                Emit("embedded " + id + " " + Describe(e));
                 break;
             case "release":
                 if (e != null) { Release(e); Emit("released " + id); }
@@ -198,21 +219,160 @@ static class WinHelper
                 CloseWindows(new List<IntPtr> { h });
                 Emit("closed " + id);
                 break;
+            case "place":
+                if (e == null || !e.App) return;
+                // Async, so an app that's hung can't hold up every other pane.
+                SetWindowPos(h, HWND_TOP, int.Parse(a[2]), int.Parse(a[3]), int.Parse(a[4]), int.Parse(a[5]),
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_ASYNCWINDOWPOS);
+                break;
+            case "hide":
+                if (e != null && e.App) ShowWindowAsync(h, SW_HIDE);
+                break;
+            case "focus":
+                if (e != null && e.App) FocusApp(h);
+                break;
+            case "close-app":
+                if (e == null || !e.App) { Emit("close-app " + id + " 1"); return; }
+                Background(() => Emit("close-app " + id + (CloseApp(e) ? " 1" : " 0")));
+                break;
         }
     }
 
-    static void Embed(IntPtr h)
+    static void Background(ThreadStart work)
+    {
+        var t = new Thread(() => { try { work(); } catch (Exception ex) { Emit("log " + ex.Message.Replace('\n', ' ')); } });
+        t.IsBackground = true;
+        t.Start();
+    }
+
+    static bool Embed(IntPtr h)
     {
         var e = new Embedded { Hwnd = h, Title = TitleOf(h) };
         GetWindowRect(h, out e.Rect);
         ShowWindow(h, SW_HIDE);
         lock (gate) embedded[h.ToInt64()] = e;
+        return true;
     }
 
-    static void Release(Embedded e)
+    // Ordinary top-level app windows: not consoles, not VibeCMD's own, not the
+    // desktop or taskbar, not dialogs or tool windows that belong to another.
+    static readonly HashSet<string> NotDockable = new HashSet<string>
+    {
+        "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Progman", "WorkerW",
+        // Store apps live inside a frame owned by another process; moving
+        // that frame into VibeCMD leaves the app itself behind.
+        "ApplicationFrameWindow", "Windows.UI.Core.CoreWindow",
+    };
+
+    static bool Dockable(IntPtr h)
+    {
+        if (!IsWindow(h) || h == host || GetParent(h) != IntPtr.Zero || GetWindow(h, GW_OWNER) != IntPtr.Zero) return false;
+        long style = GetWindowLongPtr(h, GWL_STYLE).ToInt64(), ex = GetWindowLongPtr(h, GWL_EXSTYLE).ToInt64();
+        if ((style & WS_CAPTION) != WS_CAPTION || (ex & WS_EX_TOOLWINDOW) != 0) return false;
+        string cls = ClassOf(h);
+        if (cls == ConsoleClass || NotDockable.Contains(cls)) return false;
+        uint pid, hostPid;
+        GetWindowThreadProcessId(h, out pid);
+        GetWindowThreadProcessId(host, out hostPid);
+        return pid != hostPid && pid != (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+    }
+
+    // The window becomes a child of VibeCMD's, without its frame. It stays
+    // hidden until VibeCMD places it over its pane.
+    static bool EmbedApp(IntPtr h)
+    {
+        if (IsIconic(h) || IsZoomed(h)) ShowWindow(h, SW_RESTORE);
+        var e = new Embedded { Hwnd = h, Title = TitleOf(h), App = true };
+        GetWindowRect(h, out e.Rect);
+        e.Style = GetWindowLongPtr(h, GWL_STYLE).ToInt64();
+        e.ExStyle = GetWindowLongPtr(h, GWL_EXSTYLE).ToInt64();
+        ShowWindow(h, SW_HIDE);
+        SetWindowLongPtr(h, GWL_STYLE, new IntPtr((e.Style & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU)) | WS_CHILD));
+        SetWindowLongPtr(h, GWL_EXSTYLE, new IntPtr(e.ExStyle & ~(WS_EX_APPWINDOW | WS_EX_WINDOWEDGE | WS_EX_DLGMODALFRAME)));
+        if (SetParent(h, host) == IntPtr.Zero)
+        {
+            // An app running as administrator can't be adopted by one that isn't.
+            SetWindowLongPtr(h, GWL_STYLE, new IntPtr(e.Style));
+            SetWindowLongPtr(h, GWL_EXSTYLE, new IntPtr(e.ExStyle));
+            ShowWindow(h, SW_SHOW);
+            return false;
+        }
+        SetWindowPos(h, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        lock (gate) embedded[h.ToInt64()] = e;
+        return true;
+    }
+
+    // What VibeCMD needs to reopen an app next time: its program and the
+    // arguments it was started with (usually the file it opened).
+    static string Describe(Embedded e)
+    {
+        var sb = new StringBuilder("{\"title\":").Append(Json(TitleOf(e.Hwnd))).Append(",\"app\":").Append(e.App ? "true" : "false");
+        if (e.App)
+        {
+            uint pid;
+            GetWindowThreadProcessId(e.Hwnd, out pid);
+            string exe = ExeOf(pid);
+            sb.Append(",\"exe\":").Append(Json(exe)).Append(",\"args\":").Append(Json(ArgsOf(pid)));
+        }
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes(sb.Append('}').ToString()));
+    }
+
+    static string Json(string s)
+    {
+        var sb = new StringBuilder("\"");
+        foreach (char c in s ?? "")
+        {
+            if (c == '"' || c == '\\') sb.Append('\\').Append(c);
+            else if (c < ' ') sb.Append("\\u").Append(((int)c).ToString("x4"));
+            else sb.Append(c);
+        }
+        return sb.Append('"').ToString();
+    }
+
+    static string ExeOf(uint pid)
+    {
+        IntPtr p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (p == IntPtr.Zero) return "";
+        try
+        {
+            var sb = new StringBuilder(1024);
+            int n = sb.Capacity;
+            return QueryFullProcessImageName(p, 0, sb, ref n) ? sb.ToString() : "";
+        }
+        finally { CloseHandle(p); }
+    }
+
+    // The command line minus the program itself.
+    static string ArgsOf(uint pid)
+    {
+        try
+        {
+            using (var q = new System.Management.ManagementObjectSearcher("SELECT CommandLine FROM Win32_Process WHERE ProcessId=" + pid))
+            foreach (System.Management.ManagementObject o in q.Get())
+            {
+                string cmd = ((o["CommandLine"] as string) ?? "").TrimStart();
+                int end = cmd.StartsWith("\"") ? cmd.IndexOf('"', 1) + 1 : cmd.IndexOf(' ');
+                return end <= 0 || end >= cmd.Length ? "" : cmd.Substring(end).Trim();
+            }
+        }
+        catch (Exception) { /* no WMI: reopen it without arguments */ }
+        return "";
+    }
+
+    static void Release(Embedded e, bool show = true)
     {
         lock (gate) embedded.Remove(e.Hwnd.ToInt64());
         if (!IsWindow(e.Hwnd)) return;
+        if (e.App)
+        {
+            ShowWindow(e.Hwnd, SW_HIDE);
+            SetParent(e.Hwnd, IntPtr.Zero);
+            SetWindowLongPtr(e.Hwnd, GWL_STYLE, new IntPtr(e.Style & ~WS_VISIBLE));
+            SetWindowLongPtr(e.Hwnd, GWL_EXSTYLE, new IntPtr(e.ExStyle));
+            SetWindowPos(e.Hwnd, HWND_TOP, e.Rect.Left, e.Rect.Top, e.Rect.Right - e.Rect.Left, e.Rect.Bottom - e.Rect.Top,
+                SWP_FRAMECHANGED | SWP_NOACTIVATE);
+            if (!show) return;
+        }
         ShowWindow(e.Hwnd, IsIconic(e.Hwnd) ? SW_RESTORE : SW_SHOW);
         SetWindowPos(e.Hwnd, HWND_TOP, e.Rect.Left, e.Rect.Top, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
         SetForegroundWindow(e.Hwnd);
@@ -226,11 +386,168 @@ static class WinHelper
     }
 
     // Quitting VibeCMD closes docked windows, like closing their panes does.
+    // App windows have been asked to close already (close-apps); any still
+    // here are given back rather than destroyed along with VibeCMD's window.
     static void CloseAll()
     {
         var all = new List<IntPtr>();
-        lock (gate) { foreach (var e in embedded.Values) all.Add(e.Hwnd); embedded.Clear(); }
+        var apps = new List<Embedded>();
+        lock (gate)
+        {
+            foreach (var e in embedded.Values) { if (e.App) apps.Add(e); else all.Add(e.Hwnd); }
+            embedded.Clear();
+        }
+        foreach (var e in apps) Release(e);
         CloseWindows(all);
+    }
+
+    // ------------------------------------------------------------ app windows
+
+    static IntPtr lastFocus;
+    static WinEventDelegate focusProc;
+
+    // Clicking into a docked app gives it the keyboard without VibeCMD hearing
+    // about it, so tell VibeCMD which pane that was.
+    static void OnFocus(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    {
+        if (hwnd == IntPtr.Zero || GetAncestor(hwnd, GA_ROOT) != host) return;
+        for (IntPtr w = hwnd; w != IntPtr.Zero && w != host; w = GetParent(w))
+        {
+            Embedded e;
+            lock (gate) embedded.TryGetValue(w.ToInt64(), out e);
+            if (e == null || !e.App) continue;
+            if (w != lastFocus) { lastFocus = w; Emit("focus " + w.ToInt64()); }
+            return;
+        }
+        lastFocus = IntPtr.Zero;
+    }
+
+    // Docked windows share VibeCMD's input queue, so joining it lets us move
+    // the keyboard into the app.
+    static void FocusApp(IntPtr h)
+    {
+        uint ignored;
+        uint me = GetCurrentThreadId(), hostThread = GetWindowThreadProcessId(host, out ignored);
+        AttachThreadInput(me, hostThread, true);
+        SetFocus(h);
+        AttachThreadInput(me, hostThread, false);
+    }
+
+    // Asks the app to close the way its own ✕ would, so it can offer to save.
+    // True once it's gone; false if it's still open (the user picked Cancel).
+    static bool CloseApp(Embedded e)
+    {
+        IntPtr h = e.Hwnd;
+        if (!IsWindow(h)) return true;
+        PostMessage(h, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        bool asked = false;
+        long quietSince = 0;
+        while (true)
+        {
+            Thread.Sleep(100);
+            if (!IsWindow(h)) { lock (gate) embedded.Remove(h.ToInt64()); return true; }
+            // Some apps only hide when closed (to the tray, say); give those
+            // back so they aren't destroyed along with VibeCMD.
+            if (!IsWindowVisible(h)) { Release(e, false); return true; }
+            // A save question (or the Save As after it) is modal: it disables
+            // the window it belongs to, which for a docked app is VibeCMD's.
+            if (!IsWindowEnabled(host) || !IsWindowEnabled(h)) { asked = true; quietSince = clock.ElapsedMilliseconds; continue; }
+            if (clock.ElapsedMilliseconds - quietSince > (asked ? 800 : 3000)) return false;
+        }
+    }
+
+    // On quit: each app in turn is shown and asked to close. Stops at the first
+    // one that stays open, so VibeCMD stays open too.
+    static void CloseApps()
+    {
+        List<Embedded> apps = new List<Embedded>();
+        lock (gate) foreach (var e in embedded.Values) if (e.App) apps.Add(e);
+        foreach (var e in apps)
+        {
+            if (!IsWindow(e.Hwnd)) continue;
+            Emit("reveal " + e.Hwnd.ToInt64());
+            Thread.Sleep(150);
+            if (!CloseApp(e)) { Emit("apps-kept"); return; }
+        }
+        Emit("closed-apps");
+    }
+
+    // Starts a program and reports the first normal window it shows. Apps that
+    // allow only one copy (Notepad++) hand the file to the copy already running
+    // and exit; then that copy's window is used, if it isn't docked already.
+    static void Launch(string id, string spec)
+    {
+        string json = Encoding.UTF8.GetString(Convert.FromBase64String(spec));
+        string exe = JsonField(json, "exe"), args = JsonField(json, "args");
+        var before = new HashSet<long>();
+        EnumWindows((w, _) => { before.Add(w.ToInt64()); return true; }, IntPtr.Zero);
+        uint pid = 0;
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(exe, args) { UseShellExecute = false };
+            try { psi.WorkingDirectory = Path.GetDirectoryName(exe); } catch (Exception) { }
+            pid = (uint)System.Diagnostics.Process.Start(psi).Id;
+        }
+        catch (Exception)
+        {
+            // Store apps' own folders are off limits; start them by name instead.
+            try { pid = (uint)System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.GetFileName(exe), args) { UseShellExecute = true }).Id; }
+            catch (Exception) { Emit("launch " + id + " 0"); return; }
+        }
+        IntPtr found = IntPtr.Zero;
+        for (int i = 0; i < 150 && found == IntPtr.Zero; i++)
+        {
+            Thread.Sleep(100);
+            EnumWindows((w, _) =>
+            {
+                if (before.Contains(w.ToInt64()) || !IsWindowVisible(w) || !Dockable(w)) return true;
+                uint p;
+                GetWindowThreadProcessId(w, out p);
+                if (p != pid && !SameExe(p, exe)) return true;
+                found = w;
+                return false;
+            }, IntPtr.Zero);
+            // Handed off to a copy that's already open: no new window will come.
+            if (i == 30 && found == IntPtr.Zero) found = ExistingWindowOf(exe);
+        }
+        Emit("launch " + id + " " + found.ToInt64());
+    }
+
+    static bool SameExe(uint pid, string exe)
+    {
+        return string.Equals(Path.GetFileName(ExeOf(pid)), Path.GetFileName(exe), StringComparison.OrdinalIgnoreCase);
+    }
+
+    static IntPtr ExistingWindowOf(string exe)
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((w, _) =>
+        {
+            if (!IsWindowVisible(w) || !Dockable(w)) return true;
+            uint p;
+            GetWindowThreadProcessId(w, out p);
+            if (!SameExe(p, exe)) return true;
+            found = w;
+            return false;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    // Enough JSON for the two strings VibeCMD sends.
+    static string JsonField(string json, string name)
+    {
+        int at = json.IndexOf("\"" + name + "\":\"");
+        if (at < 0) return "";
+        var sb = new StringBuilder();
+        for (int i = at + name.Length + 4; i < json.Length && json[i] != '"'; i++)
+        {
+            if (json[i] != '\\') { sb.Append(json[i]); continue; }
+            char c = json[++i];
+            if (c == 'u') { sb.Append((char)Convert.ToInt32(json.Substring(i + 1, 4), 16)); i += 4; }
+            else sb.Append(c == 'n' ? '\n' : c == 't' ? '\t' : c == 'r' ? '\r' : c);
+        }
+        return sb.ToString();
     }
 
     // Ends everything running in each window's console, the same way VibeCMD
@@ -293,7 +610,7 @@ static class WinHelper
                 continue;
             }
             // Something in the console asked for its window to be shown again.
-            if (IsWindowVisible(e.Hwnd)) ShowWindow(e.Hwnd, SW_HIDE);
+            if (!e.App && IsWindowVisible(e.Hwnd)) ShowWindow(e.Hwnd, SW_HIDE);
             string t = TitleOf(e.Hwnd);
             if (t != e.Title) { e.Title = t; Emit("title " + e.Hwnd.ToInt64() + " " + t); }
         }
@@ -315,12 +632,17 @@ static class WinHelper
 
     // ------------------------------------------------------------ Win32
 
-    const uint EVENT_SYSTEM_MOVESIZESTART = 0x000A, EVENT_SYSTEM_MOVESIZEEND = 0x000B, WINEVENT_OUTOFCONTEXT = 0;
-    const int GWL_EXSTYLE = -20;
+    const uint EVENT_SYSTEM_MOVESIZESTART = 0x000A, EVENT_SYSTEM_MOVESIZEEND = 0x000B, EVENT_OBJECT_FOCUS = 0x8005, WINEVENT_OUTOFCONTEXT = 0;
+    const int GWL_STYLE = -16, GWL_EXSTYLE = -20;
     const long WS_EX_TRANSPARENT = 0x00000020L, WS_EX_LAYERED = 0x00080000L, WS_EX_TOOLWINDOW = 0x00000080L;
-    const uint SWP_NOSIZE = 0x1, SWP_SHOWWINDOW = 0x40;
+    const long WS_EX_APPWINDOW = 0x00040000L, WS_EX_WINDOWEDGE = 0x00000100L, WS_EX_DLGMODALFRAME = 0x00000001L;
+    const long WS_POPUP = 0x80000000L, WS_CHILD = 0x40000000L, WS_VISIBLE = 0x10000000L, WS_CAPTION = 0x00C00000L;
+    const long WS_THICKFRAME = 0x00040000L, WS_SYSMENU = 0x00080000L, WS_MINIMIZEBOX = 0x00020000L, WS_MAXIMIZEBOX = 0x00010000L;
+    const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, SWP_FRAMECHANGED = 0x20;
+    const uint SWP_SHOWWINDOW = 0x40, SWP_ASYNCWINDOWPOS = 0x4000;
     const int SW_HIDE = 0, SW_SHOW = 5, SW_RESTORE = 9;
-    const uint GW_HWNDNEXT = 2;
+    const uint GW_HWNDNEXT = 2, GW_OWNER = 4, GA_ROOT = 2;
+    const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
     const int DWMWA_CLOAKED = 14;
     const uint LWA_ALPHA = 0x2;
     const uint WM_CLOSE = 0x0010;
@@ -333,6 +655,21 @@ static class WinHelper
     struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public POINT pt; }
 
     delegate void WinEventDelegate(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
+    delegate bool EnumWindowsProc(IntPtr h, IntPtr param);
+
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc proc, IntPtr param);
+    [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetParent(IntPtr child, IntPtr parent);
+    [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
+    [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
+    [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr h);
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint from, uint to, bool attach);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr p, uint flags, StringBuilder sb, ref int size);
 
     [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr mod, WinEventDelegate proc, uint pid, uint tid, uint flags);
     [DllImport("user32.dll")] static extern int GetMessage(out MSG msg, IntPtr hwnd, uint min, uint max);

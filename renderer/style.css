@@ -238,6 +238,22 @@ button.new[data-kind="powershell"] { border-left: 3px solid var(--ps); }
 .term { flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: var(--term-bg); }
 .term .xterm { height: 100%; padding: 4px 0 0 6px; }
 .pane.docked .dot { background: var(--docked); }
+/* an editor with unsaved changes: hollow dot, "unsaved" in the title bar, ● on its tab */
+.pane.unsaved .pane-head .dot { background: transparent; box-shadow: inset 0 0 0 2px var(--docked); }
+.pane.unsaved .pane-head .status { color: var(--docked); }
+.tab.unsaved .tab-name::after { content: " ●"; color: var(--docked); }
+button.new[data-kind="app"] { border-left: 3px solid var(--docked); }
+.wheel span[data-kind="app"] { border-left: 3px solid var(--docked); }
+/* A docked app's own window sits over this, clear of the rounded corners. */
+.pane.app .term {
+  margin: 0 3px 3px;
+  background: var(--panel);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  cursor: default;
+}
 .pane-head .btns .undock { display: none; }
 .pane.docked .pane-head .btns .undock { display: inline-block; }
 /* something is running in the pane, so closing it would ask first */
@@ -350,6 +366,51 @@ body.dragging .drop-overlay { display: block; }
 .help-card h2 { margin-top: 0; color: var(--accent); }
 .help-card ul { padding-left: 18px; }
 .help-card .keys { list-style: none; padding: 0; }
+/* the help window: fixed size, section tabs on top, the page scrolls */
+.help-card.help-main {
+  width: min(720px, 92vw);
+  max-width: none;
+  height: min(620px, 88vh);
+  display: flex;
+  flex-direction: column;
+  padding: 18px 0 14px;
+}
+.help-top { padding: 0 26px; flex: none; }
+.help-top h2 { margin-bottom: 10px; }
+.help-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
+.help-tabs button {
+  border-radius: 6px 6px 0 0;
+  border-bottom: none;
+  background: transparent;
+  color: var(--muted);
+  margin-bottom: -1px;
+}
+.help-tabs button.on { background: var(--panel-hi); color: var(--text); border-color: var(--border); border-top: 2px solid var(--accent); }
+.help-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 26px 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+/* Ctrl+Shift+P quick switcher */
+.modal:has(.switcher) { align-items: flex-start; padding-top: 12vh; }
+.help-card.switcher { width: min(560px, 92vw); max-width: none; padding: 10px; }
+.help-card.switcher input { width: 100%; font-size: 14px; padding: 6px 8px; }
+.sw-list { max-height: 50vh; overflow-y: auto; margin-top: 8px; scrollbar-width: thin; }
+.sw-item { display: flex; align-items: center; gap: 8px; padding: 3px 8px; border-radius: 5px; cursor: pointer; line-height: 1.5; }
+.sw-item:hover { background: color-mix(in srgb, var(--panel-hi) 60%, transparent); }
+.sw-item.on { background: var(--panel-hi); }
+.sw-item .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.sw-item[data-kind^="claude"] .dot { background: var(--accent); }
+.sw-item[data-kind="cmd"] .dot { background: var(--cmd); }
+.sw-item[data-kind="powershell"] .dot { background: var(--ps); }
+.sw-item[data-kind="docked"] .dot, .sw-item[data-kind="app"] .dot { background: var(--docked); }
+.sw-item[data-kind="tab"] .dot { border-radius: 2px; background: transparent; box-shadow: inset 0 0 0 1px var(--muted); }
+.sw-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: none; max-width: 60%; }
+.sw-detail { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.help-main > .row { padding: 0 26px; margin-bottom: 0; flex: none; }
 kbd {
   background: var(--panel-hi);
   border: 1px solid var(--border);
@@ -403,7 +464,10 @@ kbd {
 
 /* ---------- pane colour ---------- */
 .pane.colored .dot { background: var(--pc); }
-.pane.colored .pane-head { background: color-mix(in srgb, var(--pc) 16%, var(--panel-hi)); box-shadow: inset 0 2px 0 var(--pc); }
+/* A real border rather than a line inside the header, so it follows the
+   pane's rounded corners instead of being cut off by them. */
+.pane.colored { border-top: 3px solid var(--pc); }
+.pane.colored .pane-head { background: color-mix(in srgb, var(--pc) 16%, var(--panel-hi)); }
 .pane.colored.focused { border-color: var(--pc); }
 
 /* ---------- menus, dialogs, layout editor ---------- */
