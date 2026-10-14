@@ -1,0 +1,29 @@
+{
+    "version": "1.0.0",
+    "description": "Tiling workspace for Claude Code and terminal sessions",
+    "homepage": "https://github.com/XAlienX123/vibecmd",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/XAlienX123/vibecmd/releases/download/v1.0.0/VibeCMD.Setup.1.0.0.exe#/dl.7z",
+            "hash": "765b450bb25dbf201e2bc2cae172eaaf310500f3ceccf58ed0d7356d73fbe858"
+        }
+    },
+    "installer": {
+        "script": [
+            "Expand-7zipArchive \"$dir\\`$PLUGINSDIR\\app-64.7z\" \"$dir\"",
+            "Remove-Item \"$dir\\`$*\" -Recurse -Force"
+        ]
+    },
+    "bin": [["VibeCMD.exe", "vibecmd"]],
+    "shortcuts": [["VibeCMD.exe", "VibeCMD"]],
+    "notes": "Claude panes need 'claude' (Claude Code) on your PATH.",
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/XAlienX123/vibecmd/releases/download/v$version/VibeCMD-Setup-$version.exe#/dl.7z"
+            }
+        }
+    }
+}

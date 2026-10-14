@@ -1,0 +1,42 @@
+# Maintainer: XAlienX123 <XAlienX123@users.noreply.github.com>
+# Repackages the prebuilt Linux release, so no Electron or node-pty build is needed.
+pkgname=vibecmd-bin
+_pkgname=vibecmd
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='Tiling workspace for Claude Code and terminal sessions'
+arch=('x86_64')
+url='https://github.com/XAlienX123/vibecmd'
+license=('MIT')
+depends=('gtk3' 'nss' 'alsa-lib' 'libxss' 'libxtst' 'libnotify' 'libsecret')
+optdepends=('claude-code: Claude panes'
+            'powershell-bin: PowerShell panes')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+options=('!strip' '!debug')
+source=("$url/releases/download/v$pkgver/$_pkgname-$pkgver.tar.gz"
+        "LICENSE-$pkgver::https://raw.githubusercontent.com/XAlienX123/vibecmd/v$pkgver/LICENSE")
+sha256sums=('dd6bd0abd9d448f3ea26c1d0255bba909bff318eadafdf1fa00d543ade559ddd'
+            'SKIP')
+
+package() {
+  install -d "$pkgdir/opt/$_pkgname" "$pkgdir/usr/bin"
+  cp -a "$srcdir/$_pkgname-$pkgver/." "$pkgdir/opt/$_pkgname/"
+  chmod 4755 "$pkgdir/opt/$_pkgname/chrome-sandbox"
+  ln -s "/opt/$_pkgname/$_pkgname" "$pkgdir/usr/bin/$_pkgname"
+
+  install -Dm644 "$pkgdir/opt/$_pkgname/resources/app/build/icon.png" \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/$_pkgname.png"
+  install -Dm644 "$srcdir/LICENSE-$pkgver" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/$_pkgname.desktop" <<DESKTOP
+[Desktop Entry]
+Name=VibeCMD
+Comment=$pkgdesc
+Exec=$_pkgname %U
+Icon=$_pkgname
+Terminal=false
+Type=Application
+Categories=Development;
+DESKTOP
+}

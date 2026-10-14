@@ -21,14 +21,49 @@ Press **Help** in the app for the full list of controls.
 
 ## Install
 
+Run one command. Run it again later to update.
+
+**Windows** (CMD):
+
+```bat
+powershell -c "irm https://raw.githubusercontent.com/XAlienX123/vibecmd/main/install.ps1 | iex"
+```
+
+In PowerShell, run the part between the quotes. The script installs VibeCMD for your user only, so no admin prompt appears.
+
+**Linux** (Konsole or any terminal):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/XAlienX123/vibecmd/main/install.sh | sh
+```
+
+The script installs the pacman package on Arch-based distros and the .deb on Debian-based distros. On other distros, it installs the AppImage to `~/.local/bin`.
+
+### With a package manager
+
+**Scoop** (Windows):
+
+```bat
+scoop bucket add vibecmd https://github.com/XAlienX123/vibecmd
+scoop install vibecmd
+```
+
+**AUR** (Arch, CachyOS, Manjaro):
+
+```sh
+yay -S vibecmd-bin
+```
+
+### Manual download
+
 Download the file for your system from the [Releases](../../releases) page.
 
-### Windows
+#### Windows
 
 - `VibeCMD-Setup-x.y.z.exe`: the installer.
 - `VibeCMD-x.y.z-portable.exe`: a single exe that needs no install.
 
-### Linux
+#### Linux
 
 | Distro | File | Install |
 | --- | --- | --- |
